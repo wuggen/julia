@@ -1,0 +1,73 @@
+#version 450
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba8) uniform writeonly image2D img;
+layout(set = 0, binding = 1) readonly buffer Data {
+  vec4 color[3];
+  float midpt;
+
+  uint n;
+  vec2 c;
+
+  uint iters;
+} data;
+
+vec2 complex_mul(vec2 a, vec2 b) {
+  return vec2(
+      a.x * b.x - a.y * b.y,
+      a.x * b.y + a.y * b.x
+  );
+}
+
+vec2 complex_exp(vec2 z, uint n) {
+  vec2 zn = vec2(1.0, 0.0);
+
+  for (uint i = 0; i < n; i += 1) {
+    zn = complex_mul(zn, z);
+  }
+
+  return zn;
+}
+
+float find_escape_radius() {
+  float s = max(length(data.c), 1.0);
+  return s * float(data.n);
+}
+
+vec2 iteration(vec2 z) {
+  return complex_exp(z, data.n) + data.c;
+}
+
+vec4 interpolate_color(float interpolant) {
+  if (interpolant < data.midpt) {
+    interpolant = interpolant / data.midpt;
+    vec4 c = mix(data.color[0], data.color[1], interpolant);
+
+    return c;
+  } else {
+    interpolant = (interpolant - data.midpt) / (1.0 - data.midpt);
+    vec4 c = mix(data.color[1], data.color[2], interpolant);
+
+    return c;
+  }
+}
+
+void main() {
+  float R = find_escape_radius();
+  vec2 z =
+    (((gl_GlobalInvocationID.xy + vec2(0.5)) / vec2(imageSize(img))) * 2.0 * R) - R;
+  z.y = -z.y;
+
+  uint i;
+  for (i = 0; i < data.iters; i += 1) {
+    if (length(z) > R) {
+      break;
+    } else {
+      z = iteration(z);
+    }
+  }
+
+  float interpolant = float(i) / float(data.iters);
+  imageStore(img, ivec2(gl_GlobalInvocationID.xy), interpolate_color(interpolant));
+}

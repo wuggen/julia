@@ -10,7 +10,7 @@ use vulkano::instance::{
 use vulkano::pipeline::ComputePipeline;
 use vulkano::sync::GpuFuture;
 
-use image::{ImageBuffer, Pixel, Rgba};
+use image::{ImageBuffer, Rgba};
 
 #[macro_use]
 extern crate gramit;
@@ -20,7 +20,7 @@ use std::iter;
 use std::sync::Arc;
 use std::time::Instant;
 
-const IMG_DIMS: [u32; 2] = [1024, 1024];
+const IMG_DIM: u32 = 1024;
 
 macro_rules! offset_of {
     ($ty:ty, $memb:ident) => {
@@ -118,14 +118,14 @@ fn main() {
     let data = JuliaData {
         color: [
             vec4!(0.0, 0.0, 0.0, 1.0),
-            vec4!(0.1, 0.5, 0.2, 1.0),
-            vec4!(1.0, 1.0, 1.0, 1.0),
+            vec4!(0.5, 0.2, 0.6, 1.0),
+            vec4!(1.0, 0.9, 1.0, 1.0),
         ],
         midpt: 0.25,
         n: 2,
-        c: vec2!(-0.750, 0.002),
+        c: vec2!(-0.80250, 0.15800),
 
-        iters: 100,
+        iters: 500,
     };
 
     let (buf, future) =
@@ -139,8 +139,8 @@ fn main() {
     let image = StorageImage::new(
         device.clone(),
         Dimensions::Dim2d {
-            width: IMG_DIMS[0],
-            height: IMG_DIMS[1],
+            width: IMG_DIM,
+            height: IMG_DIM,
         },
         Format::R8G8B8A8Unorm,
         Some(queue.family()),
@@ -162,14 +162,14 @@ fn main() {
     let out_buf = CpuAccessibleBuffer::from_iter(
         device.clone(),
         BufferUsage::all(),
-        (0..IMG_DIMS[0] * IMG_DIMS[1] * 4).map(|_| 0u8),
+        (0..IMG_DIM * IMG_DIM * 4).map(|_| 0u8),
     )
     .unwrap();
 
     let cmd_buf = AutoCommandBufferBuilder::new(device.clone(), queue.family())
         .unwrap()
         .dispatch(
-            [IMG_DIMS[0] / 8, IMG_DIMS[1] / 8, 1],
+            [IMG_DIM / 8, IMG_DIM / 8, 1],
             compute_pipeline.clone(),
             desc_set.clone(),
             (),
@@ -206,11 +206,6 @@ fn main() {
 
     let img_contents = out_buf.read().unwrap();
     let image =
-        ImageBuffer::<Rgba<u8>, _>::from_raw(IMG_DIMS[0], IMG_DIMS[1], &img_contents[..]).unwrap();
-
-    for px in image.pixels() {
-        assert_eq!(px.channels()[3], 255);
-    }
-
+        ImageBuffer::<Rgba<u8>, _>::from_raw(IMG_DIM, IMG_DIM, &img_contents[..]).unwrap();
     image.save("julia.png").unwrap();
 }

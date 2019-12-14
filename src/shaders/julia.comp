@@ -2,8 +2,8 @@
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, rgba8) uniform writeonly image2D img;
-layout(set = 0, binding = 1) readonly buffer Data {
+layout(set = 0, binding = 0, rgba8) uniform image2D img;
+layout(set = 0, binding = 1) uniform Data {
   vec4 color[3];
   float midpt;
 
@@ -30,13 +30,12 @@ vec2 complex_exp(vec2 z, uint n) {
   return zn;
 }
 
-float find_escape_radius() {
-  float s = max(length(data.c), 1.0);
-  return s * float(data.n);
+vec2 mandelbrot_iteration(vec2 c, vec2 z) {
+  return complex_exp(z, data.n) + c;
 }
 
-vec2 iteration(vec2 z) {
-  return complex_exp(z, data.n) + data.c;
+vec2 julia_iteration(vec2 z) {
+  return mandelbrot_iteration(data.c, z);
 }
 
 vec4 interpolate_color(float interpolant) {
@@ -53,21 +52,92 @@ vec4 interpolate_color(float interpolant) {
   }
 }
 
-void main() {
-  float R = find_escape_radius();
-  vec2 z =
-    (((gl_GlobalInvocationID.xy + vec2(0.5)) / vec2(imageSize(img))) * 2.0 * R) - R;
-  z.y = -z.y;
-
+float julia(vec2 z, float R) {
   uint i;
   for (i = 0; i < data.iters; i += 1) {
     if (length(z) > R) {
       break;
     } else {
-      z = iteration(z);
+      z = julia_iteration(z);
     }
   }
 
-  float interpolant = float(i) / float(data.iters);
-  imageStore(img, ivec2(gl_GlobalInvocationID.xy), interpolate_color(interpolant));
+  float nu;
+  if (i < data.iters) {
+    uint k = i + 1;
+    nu = float(k) - log(log(length(z)) / log(R)) / log(float(data.n));
+  } else {
+    nu = float(i);
+  }
+
+  return nu / float(data.iters);
+}
+
+float mandelbrot(vec2 c, float R) {
+  vec2 z = vec2(0);
+  uint i;
+  for (i = 0; i < data.iters; i += 1) {
+    if (length(z) > R) {
+      break;
+    } else {
+      z = mandelbrot_iteration(c, z);
+    }
+  }
+
+  float nu;
+  if (i < data.iters) {
+    uint k = i + 1;
+    nu = float(k) - log(log(length(z)) / log(1.5)) / log(float(data.n));
+  } else {
+    nu = float(i);
+  }
+
+  return nu / float(data.iters);
+}
+
+vec2 get_z(vec2 offs) {
+  vec2 z =
+    (((gl_GlobalInvocationID.xy + offs) * 3.4 / vec2(imageSize(img)))) - vec2(1.7);
+  z.y = -z.y;
+  return z;
+}
+
+void main() {
+  float R = max(float(data.iters), 4.0);
+
+  vec2 z1 = get_z(vec2(1.0/3.0, 1.0/3.0));
+  vec2 z2 = get_z(vec2(1.0/3.0, 2.0/3.0));
+  vec2 z3 = get_z(vec2(2.0/3.0, 1.0/3.0));
+  vec2 z4 = get_z(vec2(2.0/3.0, 2.0/3.0));
+
+  /*
+  if (coords.x == 0 || coords.y == 0) {
+    imageStore(img, ivec2(gl_GlobalInvocationID.xy), vec4(1, 0, 1, 1));
+    return;
+  }
+
+  if (coords.x == 1 && (abs(z.y - 1.0) < 0.025 || abs(z.y + 1.0) < 0.025)) {
+    imageStore(img, ivec2(gl_GlobalInvocationID.xy), vec4(1, 0, 1, 1));
+    return;
+  }
+
+  if (coords.y == -1 && (abs(z.x - 1.0) < 0.025 || abs(z.x + 1.0) < 0.025)) {
+    imageStore(img, ivec2(gl_GlobalInvocationID.xy), vec4(1, 0, 1, 1));
+    return;
+  }
+  */
+
+  float interpolant1 = julia(z1, R);
+  float interpolant2 = julia(z2, R);
+  float interpolant3 = julia(z3, R);
+  float interpolant4 = julia(z4, R);
+
+  vec4 color1 = interpolate_color(interpolant1);
+  vec4 color2 = interpolate_color(interpolant2);
+  vec4 color3 = interpolate_color(interpolant3);
+  vec4 color4 = interpolate_color(interpolant4);
+
+  vec4 color = 0.25 * (color1 + color2 + color3 + color4);
+  //float interpolant = mandelbrot(z, R);
+  imageStore(img, ivec2(gl_GlobalInvocationID.xy), color);
 }

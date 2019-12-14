@@ -1,211 +1,134 @@
-use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, ImmutableBuffer};
-use vulkano::command_buffer::{AutoCommandBufferBuilder, CommandBuffer};
-use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-use vulkano::device::{Device, DeviceExtensions, Features};
-use vulkano::format::Format;
-use vulkano::image::{Dimensions, StorageImage};
-use vulkano::instance::{
-    Instance, InstanceExtensions, PhysicalDevice, PhysicalDeviceType, QueueFamily,
-};
-use vulkano::pipeline::ComputePipeline;
-use vulkano::sync::GpuFuture;
-
-use image::{ImageBuffer, Rgba};
+use julia::{JuliaContext, JuliaData};
 
 #[macro_use]
 extern crate gramit;
 use gramit::{Vec2, Vec4};
 
-use std::iter;
-use std::sync::Arc;
-use std::time::Instant;
+use structopt::StructOpt;
 
-const IMG_DIM: u32 = 1024;
+use palette::named;
+use palette::Srgb;
 
-macro_rules! offset_of {
-    ($ty:ty, $memb:ident) => {
-        unsafe { (&(*(0 as *const $ty)).$memb) as *const _ as usize }
-    };
-}
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
+use std::path::PathBuf;
+use std::str::FromStr;
 
-#[derive(Debug, Clone, PartialEq)]
-#[repr(C)]
-struct JuliaData {
-    color: [Vec4; 3],
-    midpt: f32,
-
+#[derive(Debug, StructOpt)]
+#[structopt(name = "julia", about = "A generator of Julia sets")]
+/// Create images of Julia sets.
+///
+/// julia generates Julia sets for complex polynomials of the form:
+///
+///     f(x) = x^n + c
+///
+/// where `n` is an integer and `c` is a complex number `c_r + c_i * i`.
+struct JuliaArgs {
+    /// The exponent n.
+    #[structopt(short = "n", long = "exponent", default_value = "2")]
     n: u32,
-    c: Vec2,
 
+    /// The real part of the complex number `c`.
+    #[structopt(short = "r", long = "real-part", default_value = "0.0")]
+    cr: f32,
+
+    /// The imaginary part of the complex number `c`.
+    #[structopt(short = "i", long = "imaginary-part", default_value = "0.0")]
+    ci: f32,
+
+    /// The number of iterations to compute.
+    #[structopt(short = "m", long = "iters", default_value = "500")]
     iters: u32,
+
+    /// The pixel width of the output image.
+    #[structopt(short, long, default_value = "1024")]
+    size: u32,
+
+    /// The color gradient. Consists of at least two and at most three comma-separated color names,
+    /// and an optional comma-separated value between 0 and 1. Valid color names are those from the
+    /// CSS3 specification.
+    #[structopt(short, long, parse(try_from_str = parse_gradient),
+        default_value = "black,white")]
+    colors: ([Vec4; 3], f32),
+
+    /// The name of the output image.
+    #[structopt(short = "o", long = "out-file", default_value = "julia.png")]
+    file: PathBuf,
 }
 
-mod julia_cs {
-    vulkano_shaders::shader! {
-        ty: "compute",
-        path: "src/shaders/julia.comp"
+#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+struct ParseGradientError;
+
+impl Display for ParseGradientError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "failed to parse color gradient")
     }
 }
 
-fn num_compute_queues(dev: &PhysicalDevice) -> usize {
-    let mut total = 0;
-    for fam in dev.queue_families() {
-        if fam.supports_compute() {
-            total += fam.queues_count();
-        }
+impl Error for ParseGradientError {}
+
+fn parse_gradient(s: &str) -> Result<([Vec4; 3], f32), ParseGradientError> {
+    let mut components = s.split(',').map(str::trim);
+
+    fn must_be_color(s: Option<&str>) -> Result<Srgb<f32>, ParseGradientError> {
+        let c = s.ok_or(ParseGradientError)?;
+        let c = named::from_str(c).ok_or(ParseGradientError)?;
+        Ok(Srgb::from_format(c))
     }
 
-    total
-}
+    fn to_vec4(c: Srgb<f32>) -> Vec4 {
+        let (r, g, b) = c.into_components();
+        vec4!(r, g, b, 1.0)
+    }
 
-fn find_best_by_type(
-    instance: &Arc<Instance>,
-    ty: PhysicalDeviceType,
-) -> Option<(PhysicalDevice, QueueFamily)> {
-    let dev = PhysicalDevice::enumerate(instance)
-        .filter(|d| {
-            d.ty() == ty
-                && DeviceExtensions::supported_by_device(*d).khr_storage_buffer_storage_class
-        })
-        .max_by_key(|d| num_compute_queues(d));
+    let c1 = must_be_color(components.next())?;
+    let c2 = must_be_color(components.next())?;
 
-    if let Some(d) = dev {
-        d.queue_families()
-            .find(|f| f.supports_compute())
-            .map(|q| (d, q.clone()))
+    let (c3, midpt) = match components.next() {
+        // No third component, flat gradient between two colors
+        None => (Srgb::<f32>::new(1.0, 1.0, 1.0), 0.999),
+        Some(s) => match named::from_str(s) {
+            // Third component isn't a color, truncated gradient between two colors
+            None => (
+                c2.clone(),
+                f32::from_str(s).map_err(|_| ParseGradientError)?,
+            ),
+            // Third component is a color, see if there's a fourth
+            Some(c) => {
+                let c = Srgb::<f32>::from_format(c);
+                match components.next() {
+                    // No midpoint specified, use default
+                    None => (c, 0.25),
+                    // Midpoint specified
+                    Some(s) => (c, f32::from_str(s).map_err(|_| ParseGradientError)?),
+                }
+            }
+        },
+    };
+
+    if components.next().is_some() {
+        Err(ParseGradientError)
     } else {
-        None
+        Ok(([to_vec4(c1), to_vec4(c2), to_vec4(c3)], midpt))
     }
-}
-
-fn find_best_physical_device(instance: &Arc<Instance>) -> Option<(PhysicalDevice, QueueFamily)> {
-    find_best_by_type(instance, PhysicalDeviceType::DiscreteGpu).or(find_best_by_type(
-        instance,
-        PhysicalDeviceType::IntegratedGpu,
-    )
-    .or(
-        find_best_by_type(instance, PhysicalDeviceType::VirtualGpu).or(find_best_by_type(
-            instance,
-            PhysicalDeviceType::Cpu,
-        )
-        .or(find_best_by_type(instance, PhysicalDeviceType::Other))),
-    ))
 }
 
 fn main() {
-    assert_eq!(offset_of!(JuliaData, color), 0);
-    assert_eq!(offset_of!(JuliaData, midpt), 48);
-    assert_eq!(offset_of!(JuliaData, n), 52);
-    assert_eq!(offset_of!(JuliaData, c), 56);
-    assert_eq!(offset_of!(JuliaData, iters), 64);
+    let args = JuliaArgs::from_args();
+    println!("{:#?}", args);
 
-    let instance = Instance::new(None, &InstanceExtensions::none(), None)
-        .expect("failed to create Vulkan instance");
-    let (physical, queue_family) =
-        find_best_physical_device(&instance).expect("failed to find a compute-enabled device");
-
-    println!("Using device {} ({:?})", physical.name(), physical.ty());
-
-    let (device, mut queues) = Device::new(
-        physical,
-        &Features::none(),
-        &DeviceExtensions::supported_by_device(physical),
-        iter::once((queue_family, 0.5)),
-    )
-    .expect("failed to create Vulkan context");
-    let queue = queues.next().unwrap();
+    let context = JuliaContext::new().expect("failed to create JuliaContext");
 
     let data = JuliaData {
-        color: [
-            vec4!(0.0, 0.0, 0.0, 1.0),
-            vec4!(0.5, 0.2, 0.6, 1.0),
-            vec4!(1.0, 0.9, 1.0, 1.0),
-        ],
-        midpt: 0.25,
-        n: 2,
-        c: vec2!(-0.80250, 0.15800),
+        color: args.colors.0,
+        color_midpoint: args.colors.1,
+        n: args.n,
+        c: vec2!(args.cr, args.ci),
 
-        iters: 500,
+        iters: args.iters,
+
+        dimensions: args.size,
     };
 
-    let (buf, future) =
-        ImmutableBuffer::from_data(data, BufferUsage::all(), queue.clone()).unwrap();
-    future
-        .then_signal_fence_and_flush()
-        .unwrap()
-        .wait(None)
-        .unwrap();
-
-    let image = StorageImage::new(
-        device.clone(),
-        Dimensions::Dim2d {
-            width: IMG_DIM,
-            height: IMG_DIM,
-        },
-        Format::R8G8B8A8Unorm,
-        Some(queue.family()),
-    )
-    .unwrap();
-
-    let shader = julia_cs::Shader::load(device.clone()).expect("failed to create shader module");
-    let compute_pipeline =
-        Arc::new(ComputePipeline::new(device.clone(), &shader.main_entry_point(), &()).unwrap());
-    let desc_set = Arc::new(
-        PersistentDescriptorSet::start(compute_pipeline.clone(), 0)
-            .add_image(image.clone())
-            .unwrap()
-            .add_buffer(buf.clone())
-            .unwrap()
-            .build()
-            .unwrap(),
-    );
-    let out_buf = CpuAccessibleBuffer::from_iter(
-        device.clone(),
-        BufferUsage::all(),
-        (0..IMG_DIM * IMG_DIM * 4).map(|_| 0u8),
-    )
-    .unwrap();
-
-    let cmd_buf = AutoCommandBufferBuilder::new(device.clone(), queue.family())
-        .unwrap()
-        .dispatch(
-            [IMG_DIM / 8, IMG_DIM / 8, 1],
-            compute_pipeline.clone(),
-            desc_set.clone(),
-            (),
-        )
-        .unwrap()
-        .build()
-        .unwrap();
-
-    let cmd_buf2 = AutoCommandBufferBuilder::new(device.clone(), queue.family())
-        .unwrap()
-        .copy_image_to_buffer(image.clone(), out_buf.clone())
-        .unwrap()
-        .build()
-        .unwrap();
-
-    let now = Instant::now();
-    cmd_buf
-        .execute(queue.clone())
-        .unwrap()
-        .then_signal_fence_and_flush()
-        .unwrap()
-        .wait(None)
-        .unwrap();
-    let elapsed = now.elapsed();
-    println!("Compute time: {:?}", elapsed);
-
-    cmd_buf2
-        .execute(queue.clone())
-        .unwrap()
-        .then_signal_fence_and_flush()
-        .unwrap()
-        .wait(None)
-        .unwrap();
-
-    let img_contents = out_buf.read().unwrap();
-    let image =
-        ImageBuffer::<Rgba<u8>, _>::from_raw(IMG_DIM, IMG_DIM, &img_contents[..]).unwrap();
-    image.save("julia.png").unwrap();
+    context.export(&data, &args.file);
 }

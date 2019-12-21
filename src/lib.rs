@@ -23,10 +23,11 @@ use std::iter;
 use std::path::Path;
 use std::sync::Arc;
 
-pub mod shaders;
+mod shaders;
+
+use shaders::julia_comp;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-#[repr(C)]
 pub struct JuliaData {
     pub color: [Vec4; 3],
     pub color_midpoint: f32,
@@ -36,7 +37,43 @@ pub struct JuliaData {
 
     pub iters: u32,
 
-    pub dimensions: u32,
+    pub center: Vec2,
+    pub extents: Vec2,
+}
+
+impl JuliaData {
+    fn into_shader_data(self) -> julia_comp::ty::Data {
+        let mut color = [[0f32; 4]; 3];
+        for (i, arr) in color.iter_mut().enumerate() {
+            arr.copy_from_slice(self.color[i].as_ref());
+        }
+
+        let mut c = [0f32; 2];
+        c.copy_from_slice(self.c.as_ref());
+
+        let mut center = [0f32; 2];
+        center.copy_from_slice(self.center.as_ref());
+
+        let mut extents = [0f32; 2];
+        extents.copy_from_slice(self.extents.as_ref());
+
+        julia_comp::ty::Data {
+            color,
+            midpt: self.color_midpoint,
+            n: self.n,
+            c,
+            iters: self.iters,
+            _dummy0: [0; 4],
+            center,
+            extents,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImgDimensions {
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug)]
@@ -85,9 +122,9 @@ impl JuliaContext {
         &self.vk_data.queue
     }
 
-    pub fn export(&self, data: &JuliaData, filename: &Path) {
+    pub fn export(&self, dims: &ImgDimensions, data: &JuliaData, filename: &Path) {
         self.export
-            .export(data, filename, self.device(), self.queue());
+            .export(dims, data, filename, self.device(), self.queue());
     }
 }
 
@@ -104,6 +141,7 @@ struct JuliaExport {
 }
 
 struct JuliaExportCache {
+    dims: ImgDimensions,
     data: JuliaData,
     output_buffer: Arc<CpuAccessibleBuffer<[u8]>>,
     command_buffer: AutoCommandBuffer<StandardCommandPoolAlloc>,
@@ -124,15 +162,22 @@ impl JuliaExport {
         })
     }
 
-    fn regen_cache(&self, data: &JuliaData, device: &Arc<Device>, queue: &Arc<Queue>) {
+    fn regen_cache(
+        &self,
+        dims: &ImgDimensions,
+        data: &JuliaData,
+        device: &Arc<Device>,
+        queue: &Arc<Queue>,
+    ) {
         let data = data.clone();
+        let shader_data = data.into_shader_data();
         let (input_buffer, future) =
-            ImmutableBuffer::from_data(data, BufferUsage::all(), queue.clone()).unwrap();
+            ImmutableBuffer::from_data(shader_data, BufferUsage::all(), queue.clone()).unwrap();
         let image = StorageImage::new(
             device.clone(),
             Dimensions::Dim2d {
-                width: data.dimensions,
-                height: data.dimensions,
+                width: dims.width,
+                height: dims.height,
             },
             Format::R8G8B8A8Unorm,
             Some(queue.family()),
@@ -150,14 +195,14 @@ impl JuliaExport {
         let output_buffer = CpuAccessibleBuffer::from_iter(
             device.clone(),
             BufferUsage::all(),
-            (0..data.dimensions * data.dimensions * 4).map(|_| 0u8),
+            (0..dims.width * dims.height * 4).map(|_| 0u8),
         )
         .unwrap();
 
         let command_buffer = AutoCommandBufferBuilder::new(device.clone(), queue.family())
             .unwrap()
             .dispatch(
-                [data.dimensions / 8, data.dimensions / 8, 1],
+                [dims.width / 8, dims.height / 8, 1],
                 self.pipeline.clone(),
                 desc_set.clone(),
                 (),
@@ -175,20 +220,28 @@ impl JuliaExport {
             .unwrap();
 
         self.cached_data.set(Some(JuliaExportCache {
+            dims: *dims,
             data,
             output_buffer,
             command_buffer,
         }));
     }
 
-    fn export(&self, data: &JuliaData, filename: &Path, device: &Arc<Device>, queue: &Arc<Queue>) {
+    fn export(
+        &self,
+        dims: &ImgDimensions,
+        data: &JuliaData,
+        filename: &Path,
+        device: &Arc<Device>,
+        queue: &Arc<Queue>,
+    ) {
         let cache_opt = self.cached_data.take();
         if cache_opt.is_none() {
-            self.regen_cache(data, device, queue);
+            self.regen_cache(dims, data, device, queue);
         } else {
             let c = cache_opt.unwrap();
             if c.data != *data {
-                self.regen_cache(data, device, queue);
+                self.regen_cache(dims, data, device, queue);
             } else {
                 self.cached_data.set(Some(c));
             }
@@ -210,8 +263,8 @@ impl JuliaExport {
 
         let img_contents = cache.output_buffer.read().unwrap();
         let image = ImageBuffer::<Rgba<u8>, _>::from_raw(
-            cache.data.dimensions,
-            cache.data.dimensions,
+            cache.dims.width,
+            cache.dims.height,
             &img_contents[..],
         )
         .unwrap();
@@ -300,29 +353,4 @@ fn find_best_physical_device(instance: &Arc<Instance>) -> Option<(PhysicalDevice
         .or_else(|| find_best_by_type(instance, PhysicalDeviceType::VirtualGpu))
         .or_else(|| find_best_by_type(instance, PhysicalDeviceType::Cpu))
         .or_else(|| find_best_by_type(instance, PhysicalDeviceType::Other))
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
-
-    use std::mem;
-    use std::ptr;
-
-    macro_rules! offset_of {
-        ($ty:ty, $memb:ident) => {
-            unsafe { (&(*ptr::null::<$ty>()).$memb) as *const _ as usize }
-        };
-    }
-
-    #[test]
-    fn julia_data_layout() {
-        assert_eq!(offset_of!(JuliaData, color), 0);
-        assert_eq!(offset_of!(JuliaData, color_midpoint), 48);
-        assert_eq!(offset_of!(JuliaData, n), 52);
-        assert_eq!(offset_of!(JuliaData, c), 56);
-        assert_eq!(offset_of!(JuliaData, iters), 64);
-        assert_eq!(offset_of!(JuliaData, dimensions), 68);
-        assert_eq!(mem::size_of::<JuliaData>(), 72);
-    }
 }

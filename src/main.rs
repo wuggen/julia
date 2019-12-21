@@ -1,4 +1,4 @@
-use julia::{JuliaContext, JuliaData};
+use julia::{ImgDimensions, JuliaContext, JuliaData};
 
 #[macro_use]
 extern crate gramit;
@@ -41,8 +41,12 @@ struct JuliaArgs {
     iters: u32,
 
     /// The pixel width of the output image.
-    #[structopt(short, long, default_value = "1024")]
-    size: u32,
+    #[structopt(short, long, default_value = "800")]
+    width: u32,
+
+    /// The pixel height of the output image.
+    #[structopt(short, long, default_value = "800")]
+    height: u32,
 
     /// The color gradient. Consists of at least two and at most three comma-separated color names,
     /// and an optional comma-separated value between 0 and 1. Valid color names are those from the
@@ -51,12 +55,21 @@ struct JuliaArgs {
         default_value = "black,white")]
     colors: ([Vec4; 3], f32),
 
+    /// The complex number at the center of the image, given as two comma-separated decimal values.
+    #[structopt(short = "O", long, parse(try_from_str = parse_vec2),
+        default_value = "0.0,0.0")]
+    center: Vec2,
+
+    /// The extent on the complex plane of the largest image dimension.
+    #[structopt(short, long, default_value = "3.6")]
+    extent: f32,
+
     /// The name of the output image.
     #[structopt(short = "o", long = "out-file", default_value = "julia.png")]
     file: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 struct ParseGradientError;
 
 impl Display for ParseGradientError {
@@ -86,7 +99,7 @@ fn parse_gradient(s: &str) -> Result<([Vec4; 3], f32), ParseGradientError> {
 
     let (c3, midpt) = match components.next() {
         // No third component, flat gradient between two colors
-        None => (Srgb::<f32>::new(1.0, 1.0, 1.0), 0.999),
+        None => (Srgb::<f32>::new(1.0, 1.0, 1.0), 1.0),
         Some(s) => match named::from_str(s) {
             // Third component isn't a color, truncated gradient between two colors
             None => (
@@ -113,11 +126,50 @@ fn parse_gradient(s: &str) -> Result<([Vec4; 3], f32), ParseGradientError> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+struct ParseVecError;
+
+impl Display for ParseVecError {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "failed to parse vec2")
+    }
+}
+
+impl Error for ParseVecError {}
+
+fn parse_vec2(s: &str) -> Result<Vec2, ParseVecError> {
+    let mut components = s.split(',').map(str::trim);
+
+    let x = components.next().ok_or(ParseVecError)?;
+    let x = f32::from_str(x).map_err(|_| ParseVecError)?;
+
+    let y = components.next().ok_or(ParseVecError)?;
+    let y = f32::from_str(y).map_err(|_| ParseVecError)?;
+
+    if components.next().is_some() {
+        Err(ParseVecError)
+    } else {
+        Ok(vec2!(x, y))
+    }
+}
+
 fn main() {
     let args = JuliaArgs::from_args();
     println!("{:#?}", args);
 
     let context = JuliaContext::new().expect("failed to create JuliaContext");
+
+    let dims = ImgDimensions {
+        width: args.width,
+        height: args.height,
+    };
+
+    let aspect = (args.width as f32) / (args.height as f32);
+    let (extent_x, extent_y) = if args.width < args.height {
+        (args.extent * aspect, args.extent)
+    } else {
+        (args.extent, args.extent / aspect)
+    };
 
     let data = JuliaData {
         color: args.colors.0,
@@ -127,8 +179,9 @@ fn main() {
 
         iters: args.iters,
 
-        dimensions: args.size,
+        center: args.center,
+        extents: vec2!(extent_x, extent_y),
     };
 
-    context.export(&data, &args.file);
+    context.export(&dims, &data, &args.file);
 }

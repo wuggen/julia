@@ -11,7 +11,9 @@ layout(set = 0, binding = 1) uniform Data {
   vec2 c;
 
   uint iters;
-  uint dimensions;
+
+  vec2 center;
+  vec2 extents;
 } data;
 
 vec2 complex_mul(vec2 a, vec2 b) {
@@ -98,10 +100,11 @@ float mandelbrot(vec2 c, float R) {
 
 vec2 get_z(vec2 offs) {
   vec2 z =
-    (((gl_GlobalInvocationID.xy + offs) * 3.2 / vec2(imageSize(img)))) - vec2(1.6);
+    (((gl_GlobalInvocationID.xy + offs) * 2.0 / vec2(imageSize(img)))) - vec2(1.0);
   z.y = -z.y;
 
-  return z;
+  return data.center + z * (data.extents / 2.0);
+  //return z;
 }
 
 void main() {

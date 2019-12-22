@@ -102,10 +102,7 @@ fn parse_gradient(s: &str) -> Result<([Vec4; 3], f32), ParseGradientError> {
         None => (Srgb::<f32>::new(1.0, 1.0, 1.0), 1.0),
         Some(s) => match named::from_str(s) {
             // Third component isn't a color, truncated gradient between two colors
-            None => (
-                c2.clone(),
-                f32::from_str(s).map_err(|_| ParseGradientError)?,
-            ),
+            None => (c2, f32::from_str(s).map_err(|_| ParseGradientError)?),
             // Third component is a color, see if there's a fourth
             Some(c) => {
                 let c = Srgb::<f32>::from_format(c);
@@ -183,5 +180,5 @@ fn main() {
         extents: vec2!(extent_x, extent_y),
     };
 
-    context.export(&dims, &data, &args.file);
+    context.export(dims, &data, &args.file);
 }

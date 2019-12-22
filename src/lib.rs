@@ -1,30 +1,22 @@
-use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, ImmutableBuffer};
-use vulkano::command_buffer::pool::standard::StandardCommandPoolAlloc;
-use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, CommandBuffer};
-use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::device::{Device, DeviceCreationError, DeviceExtensions, Features, Queue};
-use vulkano::format::Format;
-use vulkano::image::{Dimensions, StorageImage};
 use vulkano::instance::{
     Instance, InstanceCreationError, InstanceExtensions, PhysicalDevice, PhysicalDeviceType,
     QueueFamily,
 };
-use vulkano::pipeline::{ComputePipeline, ComputePipelineCreationError};
-use vulkano::sync::GpuFuture;
+use vulkano::pipeline::ComputePipelineCreationError;
 use vulkano::OomError;
-
-use image::{ImageBuffer, Rgba};
 
 use gramit::{Vec2, Vec4};
 
-use std::cell::Cell;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::iter;
 use std::path::Path;
 use std::sync::Arc;
 
+mod export;
 mod shaders;
 
+use export::JuliaExport;
 use shaders::julia_comp;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -82,12 +74,10 @@ pub struct JuliaContext {
     export: JuliaExport,
 }
 
-type CompDesc = vulkano::descriptor::pipeline_layout::PipelineLayout<shaders::julia_comp::Layout>;
-
 impl JuliaContext {
     pub fn new() -> Result<JuliaContext, JuliaCreationError> {
         let instance = Instance::new(None, &InstanceExtensions::none(), None)
-            .map_err(|e| JuliaCreationError::InstanceCreation(e))?;
+            .map_err(JuliaCreationError::InstanceCreation)?;
         let (physical, queue_family) =
             find_best_physical_device(&instance).ok_or(JuliaCreationError::DeviceDiscovery)?;
         let (device, mut queues) = Device::new(
@@ -96,7 +86,7 @@ impl JuliaContext {
             &DeviceExtensions::supported_by_device(physical),
             iter::once((queue_family, 0.5)),
         )
-        .map_err(|e| JuliaCreationError::DeviceCreation(e))?;
+        .map_err(JuliaCreationError::DeviceCreation)?;
         let queue = queues.next().unwrap();
 
         let vk_data = JuliaVkData {
@@ -122,9 +112,9 @@ impl JuliaContext {
         &self.vk_data.queue
     }
 
-    pub fn export(&self, dims: &ImgDimensions, data: &JuliaData, filename: &Path) {
+    pub fn export(&self, dims: ImgDimensions, data: &JuliaData, filename: &Path) {
         self.export
-            .export(dims, data, filename, self.device(), self.queue());
+            .export(dims, data, filename, self);
     }
 }
 
@@ -133,162 +123,6 @@ struct JuliaVkData {
     instance: Arc<Instance>,
     device: Arc<Device>,
     queue: Arc<Queue>,
-}
-
-struct JuliaExport {
-    pipeline: Arc<ComputePipeline<CompDesc>>,
-    cached_data: Cell<Option<JuliaExportCache>>,
-}
-
-struct JuliaExportCache {
-    dims: ImgDimensions,
-    data: JuliaData,
-    output_buffer: Arc<CpuAccessibleBuffer<[u8]>>,
-    command_buffer: AutoCommandBuffer<StandardCommandPoolAlloc>,
-}
-
-impl JuliaExport {
-    fn new(device: &Arc<Device>) -> Result<JuliaExport, JuliaCreationError> {
-        let shader = shaders::julia_comp::Shader::load(device.clone())
-            .map_err(|e| JuliaCreationError::ShaderLoad(e))?;
-        let pipeline = Arc::new(
-            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &())
-                .map_err(|e| JuliaCreationError::ComputePipelineCreation(e))?,
-        );
-
-        Ok(JuliaExport {
-            pipeline,
-            cached_data: Cell::new(None),
-        })
-    }
-
-    fn regen_cache(
-        &self,
-        dims: &ImgDimensions,
-        data: &JuliaData,
-        device: &Arc<Device>,
-        queue: &Arc<Queue>,
-    ) {
-        let data = data.clone();
-        let shader_data = data.into_shader_data();
-        let (input_buffer, future) =
-            ImmutableBuffer::from_data(shader_data, BufferUsage::all(), queue.clone()).unwrap();
-        let image = StorageImage::new(
-            device.clone(),
-            Dimensions::Dim2d {
-                width: dims.width,
-                height: dims.height,
-            },
-            Format::R8G8B8A8Unorm,
-            Some(queue.family()),
-        )
-        .unwrap();
-        let desc_set = Arc::new(
-            PersistentDescriptorSet::start(self.pipeline.clone(), 0)
-                .add_image(image.clone())
-                .unwrap()
-                .add_buffer(input_buffer.clone())
-                .unwrap()
-                .build()
-                .unwrap(),
-        );
-        let output_buffer = CpuAccessibleBuffer::from_iter(
-            device.clone(),
-            BufferUsage::all(),
-            (0..dims.width * dims.height * 4).map(|_| 0u8),
-        )
-        .unwrap();
-
-        let command_buffer = AutoCommandBufferBuilder::new(device.clone(), queue.family())
-            .unwrap()
-            .dispatch(
-                [dims.width / 8, dims.height / 8, 1],
-                self.pipeline.clone(),
-                desc_set.clone(),
-                (),
-            )
-            .unwrap()
-            .copy_image_to_buffer(image.clone(), output_buffer.clone())
-            .unwrap()
-            .build()
-            .unwrap();
-
-        future
-            .then_signal_fence_and_flush()
-            .unwrap()
-            .wait(None)
-            .unwrap();
-
-        self.cached_data.set(Some(JuliaExportCache {
-            dims: *dims,
-            data,
-            output_buffer,
-            command_buffer,
-        }));
-    }
-
-    fn export(
-        &self,
-        dims: &ImgDimensions,
-        data: &JuliaData,
-        filename: &Path,
-        device: &Arc<Device>,
-        queue: &Arc<Queue>,
-    ) {
-        let cache_opt = self.cached_data.take();
-        if cache_opt.is_none() {
-            self.regen_cache(dims, data, device, queue);
-        } else {
-            let c = cache_opt.unwrap();
-            if c.data != *data {
-                self.regen_cache(dims, data, device, queue);
-            } else {
-                self.cached_data.set(Some(c));
-            }
-        }
-
-        self.export_core(filename, queue);
-    }
-
-    fn export_core(&self, filename: &Path, queue: &Arc<Queue>) {
-        let cache = self.cached_data.take().unwrap();
-        cache
-            .command_buffer
-            .execute(queue.clone())
-            .unwrap()
-            .then_signal_fence_and_flush()
-            .unwrap()
-            .wait(None)
-            .unwrap();
-
-        let img_contents = cache.output_buffer.read().unwrap();
-        let image = ImageBuffer::<Rgba<u8>, _>::from_raw(
-            cache.dims.width,
-            cache.dims.height,
-            &img_contents[..],
-        )
-        .unwrap();
-        image.save(filename).unwrap();
-    }
-}
-
-impl Debug for JuliaExport {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let cache = self.cached_data.take();
-        let res = f
-            .debug_struct("JuliaExport")
-            .field("pipeline", &self.pipeline)
-            .field(
-                "cached_data",
-                &match cache {
-                    None => String::from("None"),
-                    Some(ref c) => format!("{:?}", c.data),
-                },
-            )
-            .finish();
-        self.cached_data.set(cache);
-        res
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -336,12 +170,12 @@ fn find_best_by_type(
             d.ty() == ty
                 && DeviceExtensions::supported_by_device(*d).khr_storage_buffer_storage_class
         })
-        .max_by_key(|d| num_compute_queues(d));
+        .max_by_key(num_compute_queues);
 
     if let Some(d) = dev {
         d.queue_families()
-            .find(|f| f.supports_compute())
-            .map(|q| (d, q.clone()))
+            .find(QueueFamily::supports_compute)
+            .map(|q| (d, q))
     } else {
         None
     }

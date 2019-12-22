@@ -13,3 +13,5 @@ vulkano-shaders = "^0.16"
 image = "^0.22"
 structopt = "^0.3"
 palette = { version = "^0.5", features = ["named", "named_from_str"] }
+winit = "^0.19"
+vulkano-win = "^0.16"

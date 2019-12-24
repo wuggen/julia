@@ -1,3 +1,4 @@
+use julia::interface::JuliaInterface;
 use julia::{ImgDimensions, JuliaContext, JuliaData};
 
 #[macro_use]
@@ -65,8 +66,8 @@ struct JuliaArgs {
     extent: f32,
 
     /// The name of the output image.
-    #[structopt(short = "o", long = "out-file", default_value = "julia.png")]
-    file: PathBuf,
+    #[structopt(short = "o", long = "output")]
+    file: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -80,12 +81,83 @@ impl Display for ParseGradientError {
 
 impl Error for ParseGradientError {}
 
+impl JuliaArgs {
+    fn filename(&self) -> PathBuf {
+        match &self.file {
+            Some(path) => path.clone(),
+            None => {
+                fn to_hex(c: Vec4) -> String {
+                    let c = Srgb::new(c[0], c[1], c[2]);
+                    let c = Srgb::<u8>::from_format(c);
+                    format!("{:x}{:x}{:x}", c.red, c.green, c.blue)
+                }
+
+                PathBuf::from(format!(
+                    "x{}_{}_{}i_m{}_c{}-{}_e{}_c{}-{}-{}-{}_{}x{}.png",
+                    self.n,
+                    self.cr,
+                    self.ci,
+                    self.iters,
+                    self.center[0],
+                    self.center[1],
+                    self.extent,
+                    to_hex(self.colors.0[0]),
+                    to_hex(self.colors.0[1]),
+                    to_hex(self.colors.0[2]),
+                    self.colors.1,
+                    self.width,
+                    self.height,
+                ))
+            }
+        }
+    }
+}
+
+fn parse_hexcode(s: &str) -> Option<Srgb<u8>> {
+    eprintln!("Parsing '{}' as hex code", s);
+    let mut channels = Vec::new();
+    let mut current = 0u8;
+    for (i, c) in s.chars().enumerate() {
+        eprintln!("Char {}: {}", i, c);
+        eprintln!("Parsed channels: {:?}", channels);
+        eprintln!("Current channel: {:x}", current);
+        if channels.len() >= 3 || (i == 0 && c != '#') {
+            eprintln!("Aborting!");
+            return None;
+        } else {
+            if i == 0 {
+                continue;
+            }
+
+            current = current << 4;
+            current += c.to_digit(16)? as u8;
+            if i % 2 == 0 {
+                channels.push(current);
+                current = 0;
+            }
+
+            eprintln!(
+                "After char {}, current = {}, channels = {:?}",
+                i, current, channels
+            );
+        }
+    }
+
+    if channels.len() != 3 {
+        None
+    } else {
+        Some(Srgb::new(channels[0], channels[1], channels[2]))
+    }
+}
+
 fn parse_gradient(s: &str) -> Result<([Vec4; 3], f32), ParseGradientError> {
     let mut components = s.split(',').map(str::trim);
 
     fn must_be_color(s: Option<&str>) -> Result<Srgb<f32>, ParseGradientError> {
         let c = s.ok_or(ParseGradientError)?;
-        let c = named::from_str(c).ok_or(ParseGradientError)?;
+        let c = named::from_str(c)
+            .or_else(|| parse_hexcode(c))
+            .ok_or(ParseGradientError)?;
         Ok(Srgb::from_format(c))
     }
 
@@ -100,7 +172,7 @@ fn parse_gradient(s: &str) -> Result<([Vec4; 3], f32), ParseGradientError> {
     let (c3, midpt) = match components.next() {
         // No third component, flat gradient between two colors
         None => (Srgb::<f32>::new(1.0, 1.0, 1.0), 1.0),
-        Some(s) => match named::from_str(s) {
+        Some(s) => match named::from_str(s).or_else(|| parse_hexcode(s)) {
             // Third component isn't a color, truncated gradient between two colors
             None => (c2, f32::from_str(s).map_err(|_| ParseGradientError)?),
             // Third component is a color, see if there's a fourth
@@ -153,6 +225,7 @@ fn parse_vec2(s: &str) -> Result<Vec2, ParseVecError> {
 fn main() {
     let args = JuliaArgs::from_args();
     println!("{:#?}", args);
+    println!("Computed filename: {:?}", args.filename());
 
     let context = JuliaContext::new().expect("failed to create JuliaContext");
 
@@ -180,5 +253,8 @@ fn main() {
         extents: vec2!(extent_x, extent_y),
     };
 
-    context.export(dims, &data, &args.file);
+    context.export(dims, &data, &args.filename());
+
+    //let mut interface = JuliaInterface::new(&context, None).expect("failed to create JuliaInterface");
+    //interface.run(&context);
 }

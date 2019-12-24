@@ -2,51 +2,36 @@ use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, ImmutableBuffer};
 use vulkano::command_buffer::pool::standard::StandardCommandPoolAlloc;
 use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, CommandBuffer};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-use vulkano::descriptor::pipeline_layout::PipelineLayout;
-use vulkano::device::Device;
 use vulkano::format::Format;
 use vulkano::image::{Dimensions, StorageImage};
-use vulkano::pipeline::ComputePipeline;
 use vulkano::sync::GpuFuture;
 
 use image::{ImageBuffer, Rgba};
 
 use crate::shaders::julia_comp;
-use crate::{ImgDimensions, JuliaContext, JuliaCreationError, JuliaData};
+use crate::{ImgDimensions, JuliaContext, JuliaData};
 
 use std::cell::Cell;
 use std::fmt::{self, Debug, Formatter};
 use std::path::Path;
 use std::sync::Arc;
 
-pub type CompDesc = PipelineLayout<julia_comp::Layout>;
-
 pub struct JuliaExport {
-    pipeline: Arc<ComputePipeline<CompDesc>>,
     cached_data: Cell<Option<JuliaExportCache>>,
 }
 
 struct JuliaExportCache {
     dims: ImgDimensions,
     data: JuliaData,
-    input_buffer: Arc<ImmutableBuffer<julia_comp::ty::Data>>,
-    image: Arc<StorageImage<Format>>,
+    command_buffer: Arc<AutoCommandBuffer>,
     output_buffer: Arc<CpuAccessibleBuffer<[u8]>>,
 }
 
 impl JuliaExport {
-    pub fn new(device: &Arc<Device>) -> Result<JuliaExport, JuliaCreationError> {
-        let shader =
-            julia_comp::Shader::load(device.clone()).map_err(JuliaCreationError::ShaderLoad)?;
-        let pipeline = Arc::new(
-            ComputePipeline::new(device.clone(), &shader.main_entry_point(), &())
-                .map_err(JuliaCreationError::ComputePipelineCreation)?,
-        );
-
-        Ok(JuliaExport {
-            pipeline,
+    pub fn new() -> JuliaExport {
+        JuliaExport {
             cached_data: Cell::new(None),
-        })
+        }
     }
 
     fn regen_cache(&self, dims: ImgDimensions, data: &JuliaData, context: &JuliaContext) {
@@ -73,6 +58,35 @@ impl JuliaExport {
         )
         .unwrap();
 
+        let descriptor_set = Arc::new(
+            PersistentDescriptorSet::start(context.pipeline().clone(), 0)
+                .add_image(image.clone())
+                .unwrap()
+                .add_buffer(input_buffer.clone())
+                .unwrap()
+                .build()
+                .unwrap(),
+        );
+
+        let command_buffer = Arc::new(
+            AutoCommandBufferBuilder::primary(
+                context.device().clone(),
+                context.queue().family(),
+            )
+            .unwrap()
+            .dispatch(
+                [dims.width / 8, dims.height / 8, 1],
+                context.pipeline().clone(),
+                descriptor_set.clone(),
+                (),
+            )
+            .unwrap()
+            .copy_image_to_buffer(image.clone(), output_buffer.clone())
+            .unwrap()
+            .build()
+            .unwrap(),
+        );
+
         future
             .then_signal_fence_and_flush()
             .unwrap()
@@ -82,44 +96,9 @@ impl JuliaExport {
         self.cached_data.set(Some(JuliaExportCache {
             dims,
             data: *data,
-            input_buffer,
-            image,
+            command_buffer,
             output_buffer,
         }));
-    }
-
-    fn command_buffer(
-        &self,
-        context: &JuliaContext,
-    ) -> AutoCommandBuffer<StandardCommandPoolAlloc> {
-        let cache = self.cached_data.take().unwrap();
-        let desc_set = Arc::new(
-            PersistentDescriptorSet::start(self.pipeline.clone(), 0)
-                .add_image(cache.image.clone())
-                .unwrap()
-                .add_buffer(cache.input_buffer.clone())
-                .unwrap()
-                .build()
-                .unwrap(),
-        );
-
-        let cmd_buf =
-            AutoCommandBufferBuilder::new(context.device().clone(), context.queue().family())
-                .unwrap()
-                .dispatch(
-                    [cache.dims.width / 8, cache.dims.height / 8, 1],
-                    self.pipeline.clone(),
-                    desc_set.clone(),
-                    (),
-                )
-                .unwrap()
-                .copy_image_to_buffer(cache.image.clone(), cache.output_buffer.clone())
-                .unwrap()
-                .build()
-                .unwrap();
-
-        self.cached_data.set(Some(cache));
-        cmd_buf
     }
 
     pub fn export(
@@ -146,7 +125,11 @@ impl JuliaExport {
     }
 
     fn export_core(&self, filename: &Path, context: &JuliaContext) {
-        self.command_buffer(context)
+        let cache = self.cached_data.take().unwrap();
+        //self.command_buffer(context)
+        cache
+            .command_buffer
+            .clone()
             .execute(context.queue().clone())
             .unwrap()
             .then_signal_fence_and_flush()
@@ -154,7 +137,6 @@ impl JuliaExport {
             .wait(None)
             .unwrap();
 
-        let cache = self.cached_data.take().unwrap();
         let img_contents = cache.output_buffer.read().unwrap();
         let image = ImageBuffer::<Rgba<u8>, _>::from_raw(
             cache.dims.width,
@@ -174,7 +156,6 @@ impl Debug for JuliaExport {
         let cache = self.cached_data.take();
         let res = f
             .debug_struct("JuliaExport")
-            .field("pipeline", &self.pipeline)
             .field(
                 "cached_data",
                 &match cache {

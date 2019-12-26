@@ -114,15 +114,10 @@ impl JuliaArgs {
 }
 
 fn parse_hexcode(s: &str) -> Option<Srgb<u8>> {
-    eprintln!("Parsing '{}' as hex code", s);
     let mut channels = Vec::new();
     let mut current = 0u8;
     for (i, c) in s.chars().enumerate() {
-        eprintln!("Char {}: {}", i, c);
-        eprintln!("Parsed channels: {:?}", channels);
-        eprintln!("Current channel: {:x}", current);
         if channels.len() >= 3 || (i == 0 && c != '#') {
-            eprintln!("Aborting!");
             return None;
         } else {
             if i == 0 {
@@ -135,11 +130,6 @@ fn parse_hexcode(s: &str) -> Option<Srgb<u8>> {
                 channels.push(current);
                 current = 0;
             }
-
-            eprintln!(
-                "After char {}, current = {}, channels = {:?}",
-                i, current, channels
-            );
         }
     }
 
@@ -253,8 +243,8 @@ fn main() {
         extents: vec2!(extent_x, extent_y),
     };
 
-    context.export(dims, &data, &args.filename());
+    //context.export(dims, &data, &args.filename());
 
-    //let mut interface = JuliaInterface::new(&context, None).expect("failed to create JuliaInterface");
-    //interface.run(&context);
+    let mut interface = JuliaInterface::new(&context, Some(data)).expect("failed to create JuliaInterface");
+    interface.run(&context).unwrap();
 }

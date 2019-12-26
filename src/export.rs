@@ -1,14 +1,10 @@
 use vulkano::buffer::{BufferUsage, CpuAccessibleBuffer, ImmutableBuffer};
-use vulkano::command_buffer::pool::standard::StandardCommandPoolAlloc;
 use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, CommandBuffer};
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::format::Format;
 use vulkano::image::{Dimensions, StorageImage};
 use vulkano::sync::GpuFuture;
 
-use image::{ImageBuffer, Rgba};
-
-use crate::shaders::julia_comp;
 use crate::{ImgDimensions, JuliaContext, JuliaData};
 
 use std::cell::Cell;
@@ -24,7 +20,7 @@ struct JuliaExportCache {
     dims: ImgDimensions,
     data: JuliaData,
     command_buffer: Arc<AutoCommandBuffer>,
-    output_buffer: Arc<CpuAccessibleBuffer<[u8]>>,
+    output_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
 }
 
 impl JuliaExport {
@@ -46,7 +42,7 @@ impl JuliaExport {
                 width: dims.width,
                 height: dims.height,
             },
-            Format::R8G8B8A8Unorm,
+            Format::R16G16B16A16Unorm,
             Some(context.queue().family()),
         )
         .unwrap();
@@ -54,7 +50,7 @@ impl JuliaExport {
         let output_buffer = CpuAccessibleBuffer::from_iter(
             context.device().clone(),
             BufferUsage::all(),
-            (0..dims.width * dims.height * 4).map(|_| 0u8),
+            (0..dims.width * dims.height * 4).map(|_| 0u16),
         )
         .unwrap();
 
@@ -138,15 +134,26 @@ impl JuliaExport {
             .unwrap();
 
         let img_contents = cache.output_buffer.read().unwrap();
-        let image = ImageBuffer::<Rgba<u8>, _>::from_raw(
+        let mut img_vec = Vec::new();
+        for subpx in &img_contents[..] {
+            img_vec.extend_from_slice(&subpx.to_ne_bytes());
+        }
+
+        /*
+        let image = ImageBuffer::<Rgba<u16>, _>::from_raw(
             cache.dims.width,
             cache.dims.height,
             &img_contents[..],
         )
         .unwrap();
         image.save(filename).unwrap();
+        */
 
         drop(img_contents);
+
+        image::save_buffer(filename, img_vec.as_ref(), cache.dims.width, cache.dims.height,
+            image::ColorType::RGBA(16)).unwrap();
+
         self.cached_data.set(Some(cache));
     }
 }

@@ -1,15 +1,10 @@
-use vulkano::buffer::cpu_pool::CpuBufferPool;
-use vulkano::command_buffer::pool::standard::StandardCommandPoolAlloc;
-use vulkano::command_buffer::{AutoCommandBuffer, AutoCommandBufferBuilder, CommandBuffer};
-use vulkano::descriptor::descriptor_set::FixedSizeDescriptorSetsPool;
-use vulkano::device::{Device, Queue};
-use vulkano::format::Format;
+use vulkano::command_buffer::{AutoCommandBuffer, CommandBufferExecFuture};
 use vulkano::image::swapchain::SwapchainImage;
 use vulkano::image::ImageUsage;
-use vulkano::instance::Instance;
-use vulkano::pipeline::ComputePipeline;
-use vulkano::swapchain::{self, CompositeAlpha, PresentMode, Surface, Swapchain};
-use vulkano::sync::{GpuFuture, SharingMode};
+use vulkano::swapchain::{
+    self, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreationError,
+};
+use vulkano::sync::{GpuFuture, JoinFuture, NowFuture, SharingMode};
 
 use vulkano_win::VkSurfaceBuild;
 
@@ -18,11 +13,13 @@ use winit::{ElementState, Event, EventsLoop, MouseButton, Window, WindowBuilder,
 
 use gramit::{Vec2, Vec4, Vector};
 
-use crate::shaders::julia_comp;
-use crate::{CompDesc, JuliaContext, JuliaCreationError, JuliaData};
+use crate::image::{JuliaImage, JuliaImageError};
+use crate::render::{JuliaRender, JuliaRenderError};
+use crate::{JuliaContext, JuliaData};
 
-use std::fmt::{self, Debug, Formatter};
-use std::sync::{Arc, Mutex};
+use std::error::Error;
+use std::fmt::{self, Debug, Display, Formatter};
+use std::sync::Arc;
 
 pub struct JuliaInterface {
     events_loop: EventsLoop,
@@ -30,13 +27,13 @@ pub struct JuliaInterface {
     surface: Arc<Surface<Window>>,
     swapchain: Arc<Swapchain<Window>>,
     swapchain_images: Vec<Arc<SwapchainImage<Window>>>,
-    descriptor_sets_pool: Mutex<FixedSizeDescriptorSetsPool<Arc<ComputePipeline<CompDesc>>>>,
-    buffer_pool: CpuBufferPool<julia_comp::ty::Data>,
+    image: JuliaImage,
+    render: JuliaRender,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct JuliaState {
-    set_data: JuliaData,
+    data: JuliaData,
     mouse_state: MouseState,
     close_requested: bool,
 }
@@ -49,23 +46,23 @@ struct MouseState {
 
 impl JuliaState {
     pub fn zoom(&mut self, factor: f32) {
-        self.set_data.extents *= factor;
+        self.data.extents *= factor;
     }
 
     pub fn pan(&mut self, offset: Vec2) {
-        self.set_data.center += offset;
+        self.data.center += offset;
     }
 
     pub fn set_c(&mut self, c: Vec2) {
-        self.set_data.c = c;
+        self.data.c = c;
     }
 
     pub fn set_n(&mut self, n: u32) {
-        self.set_data.n = n;
+        self.data.n = n;
     }
 
     pub fn set_iters(&mut self, iters: u32) {
-        self.set_data.iters = iters;
+        self.data.iters = iters;
     }
 
     pub fn close(&mut self) {
@@ -73,7 +70,7 @@ impl JuliaState {
     }
 
     pub fn julia_set(&self) -> &JuliaData {
-        &self.set_data
+        &self.data
     }
 
     pub fn close_requested(&self) -> bool {
@@ -111,7 +108,7 @@ impl MouseState {
         };
 
         self.pos = new_pos;
-        offset
+        vec2!(-offset.x, offset.y)
     }
 }
 
@@ -122,6 +119,8 @@ impl Debug for JuliaInterface {
             .field("surface", &self.surface)
             .field("swapchain", &self.swapchain)
             .field("events_loop", &self.events_loop)
+            .field("image", &self.image)
+            .field("render", &self.render)
             .finish()
     }
 }
@@ -149,7 +148,7 @@ fn event_callback<'ifc>(
                     let offset = julia_state.mouse_state.update_and_get_offset(
                         position,
                         window_dims,
-                        &julia_state.set_data,
+                        &julia_state.data,
                     );
                     julia_state.pan(offset);
                 }
@@ -175,7 +174,7 @@ impl JuliaInterface {
     pub fn new(
         context: &JuliaContext,
         init_state: Option<JuliaData>,
-    ) -> Result<JuliaInterface, JuliaCreationError> {
+    ) -> Result<JuliaInterface, JuliaInterfaceError> {
         let events_loop = EventsLoop::new();
 
         let monitor = events_loop.get_primary_monitor();
@@ -198,8 +197,7 @@ impl JuliaInterface {
         let surface = WindowBuilder::new()
             .with_dimensions(win_size)
             .with_resizable(false)
-            .build_vk_surface(&events_loop, context.instance().clone())
-            .map_err(JuliaCreationError::SurfaceCreation)?;
+            .build_vk_surface(&events_loop, context.instance().clone())?;
 
         let caps = surface
             .capabilities(context.device().physical_device())
@@ -223,7 +221,10 @@ impl JuliaInterface {
         let sharing = SharingMode::Exclusive(context.queue().family().id());
         let transform = caps.current_transform;
         let alpha = CompositeAlpha::Opaque;
-        eprintln!("Supported composite alpha: {:?}", caps.supported_composite_alpha);
+        eprintln!(
+            "Supported composite alpha: {:?}",
+            caps.supported_composite_alpha
+        );
         let present_mode = PresentMode::Mailbox;
         let clipped = true;
         let old_swapchain = None;
@@ -242,19 +243,15 @@ impl JuliaInterface {
             present_mode,
             clipped,
             old_swapchain,
-        )
-        .map_err(JuliaCreationError::SwapchainCreation)?;
+        )?;
 
-        let descriptor_sets_pool = Mutex::new(FixedSizeDescriptorSetsPool::new(
-            context.pipeline().clone(),
-            0,
-        ));
-        let buffer_pool = CpuBufferPool::uniform_buffer(context.device().clone());
+        let image = JuliaImage::new(context, dimensions.clone())?;
+        let render = JuliaRender::new(context, format, 1)?;
 
         Ok(JuliaInterface {
             events_loop,
             state: JuliaState {
-                set_data: init_state.unwrap_or_else(default_state),
+                data: init_state.unwrap_or_else(default_state),
                 mouse_state: MouseState {
                     pos: LogicalPosition { x: 0.0, y: 0.0 },
                     dragging: false,
@@ -264,79 +261,51 @@ impl JuliaInterface {
             surface,
             swapchain,
             swapchain_images,
-            descriptor_sets_pool,
-            buffer_pool,
+            image,
+            render,
         })
     }
 
-    fn command_buffer(
-        &self,
-        context: &JuliaContext,
-        image: Arc<SwapchainImage<Window>>,
-    ) -> AutoCommandBuffer {
-        let buf = self
-            .buffer_pool
-            .next(self.state.set_data.into_shader_data())
-            .unwrap();
-        let [width, height] = image.dimensions();
-        let desc_set = Arc::new(
-            self.descriptor_sets_pool
-                .lock()
-                .unwrap()
-                .next()
-                .add_image(image)
-                .unwrap()
-                .add_buffer(buf)
-                .unwrap()
-                .build()
-                .unwrap(),
-        );
+    fn new_frame(&self, context: &JuliaContext) -> Result<impl GpuFuture, JuliaInterfaceError> {
+        let compute_future = self.image.draw(self.state.data, context)?;
 
-        AutoCommandBufferBuilder::primary_one_time_submit(
-            context.device().clone(),
-            context.queue().family(),
-        )
-        .unwrap()
-        .dispatch(
-            [width / 8, height / 8, 1],
-            context.pipeline().clone(),
-            desc_set.clone(),
-            (),
-        )
-        .unwrap()
-        .build()
-        .unwrap()
+        let (idx, acquire_future) =
+            swapchain::acquire_next_image(self.swapchain.clone(), None).unwrap();
+        let swapchain_image = self.swapchain_images[idx].clone();
+
+        Ok(self
+            .render
+            .draw_after(
+                compute_future.join(acquire_future),
+                self.image.image().clone(),
+                swapchain_image,
+                context,
+            )?
+            .then_swapchain_present(context.queue().clone(), self.swapchain.clone(), idx))
     }
 
-    fn new_frame(&self, context: &JuliaContext) -> impl GpuFuture {
-        let (idx, future) = swapchain::acquire_next_image(self.swapchain.clone(), None).unwrap();
-        let image = self.swapchain_images[idx].clone();
-        let cmd_buf = self.command_buffer(context, image);
-
-        future
-            .then_execute(context.queue().clone(), cmd_buf)
-            .unwrap()
-            .then_swapchain_present(context.queue().clone(), self.swapchain.clone(), idx)
-    }
-
-    fn update(&mut self, context: &JuliaContext) {
+    fn update(&mut self, context: &JuliaContext) -> Result<(), JuliaInterfaceError> {
         let mut new_state = self.state;
         let window_dims = self.surface.window().get_inner_size().unwrap();
-        self.events_loop.poll_events(event_callback(&mut new_state, window_dims));
+        self.events_loop
+            .poll_events(event_callback(&mut new_state, window_dims));
         self.state = new_state;
 
-        let mut finished = self.new_frame(context)
+        let mut finished = self
+            .new_frame(context)?
             .then_signal_fence_and_flush()
             .unwrap();
 
         finished.wait(None).unwrap();
         finished.cleanup_finished();
+
+        Ok(())
     }
 
-    pub fn run(&mut self, context: &JuliaContext) {
+    pub fn run(&mut self, context: &JuliaContext) -> Result<(), JuliaInterfaceError> {
         //let mut count = 0;
         while !self.state.close_requested {
-            self.update(context);
+            self.update(context)?;
 
             /*
             count += 1;
@@ -345,5 +314,50 @@ impl JuliaInterface {
             }
             */
         }
+
+        Ok(())
+    }
+}
+
+macro_rules! impl_error {
+    (pub enum $enum_name:ident { $($enum_var:ident ($base_err:ty)),* ,}) => {
+        impl_error! {
+            pub enum $enum_name { $($enum_var($base_err)),* }
+        }
+    };
+
+    (pub enum $enum_name:ident { $($enum_var:ident ($base_err:ty)),*}) => {
+        #[derive(Debug)]
+        pub enum $enum_name {
+            $($enum_var($base_err)),*
+        }
+
+        use $enum_name::*;
+
+        impl Display for $enum_name {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                match self {
+                    $($enum_var(e) => write!(f, "{}: {}", stringify!($enum_name), e)),*
+                }
+            }
+        }
+
+        impl Error for $enum_name {}
+
+        $(impl From<$base_err> for $enum_name {
+            #[inline]
+            fn from(err: $base_err) -> $enum_name {
+                $enum_var(err)
+            }
+        })*
+    };
+}
+
+impl_error! {
+    pub enum JuliaInterfaceError {
+        JuliaImageErr(JuliaImageError),
+        JuliaRenderErr(JuliaRenderError),
+        VkWinCreationErr(vulkano_win::CreationError),
+        VkSwapchainCreationErr(SwapchainCreationError),
     }
 }

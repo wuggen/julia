@@ -5,7 +5,6 @@ use vulkano::instance::{
     QueueFamily,
 };
 use vulkano::pipeline::{ComputePipeline, ComputePipelineCreationError};
-use vulkano::swapchain::SwapchainCreationError;
 use vulkano::OomError;
 
 #[macro_use]
@@ -18,12 +17,14 @@ use std::path::Path;
 use std::sync::Arc;
 
 mod export;
+mod image;
+mod render;
 mod shaders;
 
 pub mod interface;
 
 use export::JuliaExport;
-use interface::JuliaInterface;
+//use interface::JuliaInterface;
 use shaders::julia_comp;
 
 type CompDesc = PipelineLayout<julia_comp::Layout>;
@@ -85,12 +86,15 @@ pub struct JuliaContext {
 
 impl JuliaContext {
     pub fn new() -> Result<JuliaContext, JuliaCreationError> {
-        let instance = Instance::new(None, &InstanceExtensions {
-            ext_debug_utils: true,
-            ..vulkano_win::required_extensions()
-        }
-        , None)
-            .map_err(JuliaCreationError::InstanceCreation)?;
+        let instance = Instance::new(
+            None,
+            &InstanceExtensions {
+                ext_debug_utils: true,
+                ..vulkano_win::required_extensions()
+            },
+            None,
+        )
+        .map_err(JuliaCreationError::InstanceCreation)?;
 
         let _dbcallback = vulkano::instance::debug::DebugCallback::new(
             &instance,
@@ -107,7 +111,9 @@ impl JuliaContext {
             },
             |m| {
                 eprintln!("[{}] {}", m.layer_prefix, m.description);
-            }).expect("failed to register debug callback");
+            },
+        )
+        .expect("failed to register debug callback");
 
         let (physical, queue_family) =
             find_best_physical_device(&instance).ok_or(JuliaCreationError::DeviceDiscovery)?;
@@ -142,10 +148,7 @@ impl JuliaContext {
             pipeline,
         };
 
-        Ok(JuliaContext {
-            vk_data,
-            export,
-        })
+        Ok(JuliaContext { vk_data, export })
     }
 
     pub fn instance(&self) -> &Arc<Instance> {
@@ -184,8 +187,6 @@ pub enum JuliaCreationError {
     DeviceCreation(DeviceCreationError),
     ShaderLoad(OomError),
     ComputePipelineCreation(ComputePipelineCreationError),
-    SurfaceCreation(vulkano_win::CreationError),
-    SwapchainCreation(SwapchainCreationError),
 }
 
 impl Display for JuliaCreationError {
@@ -198,10 +199,6 @@ impl Display for JuliaCreationError {
             JuliaCreationError::DeviceCreation(e) => write!(f, "{}", e),
             JuliaCreationError::ShaderLoad(e) => write!(f, "failed to load shader: {}", e),
             JuliaCreationError::ComputePipelineCreation(e) => write!(f, "{}", e),
-            JuliaCreationError::SurfaceCreation(e) => write!(f, "failed to create surface: {}", e),
-            JuliaCreationError::SwapchainCreation(e) => {
-                write!(f, "failed to create swapchain: {}", e)
-            }
         }
     }
 }

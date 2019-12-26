@@ -5,6 +5,8 @@ use vulkano::format::Format;
 use vulkano::image::{Dimensions, StorageImage};
 use vulkano::sync::GpuFuture;
 
+use palette::{LinSrgba, Srgba};
+
 use crate::{ImgDimensions, JuliaContext, JuliaData};
 
 use std::cell::Cell;
@@ -20,7 +22,7 @@ struct JuliaExportCache {
     dims: ImgDimensions,
     data: JuliaData,
     command_buffer: Arc<AutoCommandBuffer>,
-    output_buffer: Arc<CpuAccessibleBuffer<[u16]>>,
+    output_buffer: Arc<CpuAccessibleBuffer<[u8]>>,
 }
 
 impl JuliaExport {
@@ -42,7 +44,7 @@ impl JuliaExport {
                 width: dims.width,
                 height: dims.height,
             },
-            Format::R16G16B16A16Unorm,
+            Format::R8G8B8A8Unorm,
             Some(context.queue().family()),
         )
         .unwrap();
@@ -50,7 +52,7 @@ impl JuliaExport {
         let output_buffer = CpuAccessibleBuffer::from_iter(
             context.device().clone(),
             BufferUsage::all(),
-            (0..dims.width * dims.height * 4).map(|_| 0u16),
+            (0..dims.width * dims.height * 4).map(|_| 0u8),
         )
         .unwrap();
 
@@ -135,9 +137,21 @@ impl JuliaExport {
 
         let img_contents = cache.output_buffer.read().unwrap();
         let mut img_vec = Vec::new();
+        img_vec.extend_from_slice(&img_contents[..]);
+        drop(img_contents);
+
+        for c in img_vec.chunks_exact_mut(4) {
+            let lin = LinSrgba::<f32>::from_format(LinSrgba::new(c[0], c[1], c[2], c[3]));
+            let nonlin = Srgba::<u8>::from_format(Srgba::from_linear(lin));
+            let (r, g, b, a) = nonlin.into_components();
+            c.copy_from_slice(&[r, g, b, a]);
+        }
+
+        /*
         for subpx in &img_contents[..] {
             img_vec.extend_from_slice(&subpx.to_ne_bytes());
         }
+        */
 
         /*
         let image = ImageBuffer::<Rgba<u16>, _>::from_raw(
@@ -149,10 +163,8 @@ impl JuliaExport {
         image.save(filename).unwrap();
         */
 
-        drop(img_contents);
-
         image::save_buffer(filename, img_vec.as_ref(), cache.dims.width, cache.dims.height,
-            image::ColorType::RGBA(16)).unwrap();
+            image::ColorType::RGBA(8)).unwrap();
 
         self.cached_data.set(Some(cache));
     }

@@ -1,8 +1,7 @@
 use vulkano::buffer::{BufferUsage, ImmutableBuffer};
 use vulkano::command_buffer::{
-    AutoCommandBuffer, AutoCommandBufferBuilder, AutoCommandBufferBuilderContextError,
-    BeginRenderPassError, BuildError, CommandBufferExecError, CommandBufferExecFuture, DrawError,
-    DynamicState,
+    AutoCommandBufferBuilder, AutoCommandBufferBuilderContextError, BeginRenderPassError,
+    BuildError, CommandBufferExecError, DrawError, DynamicState,
 };
 use vulkano::descriptor::descriptor_set::{
     FixedSizeDescriptorSetsPool, PersistentDescriptorSetBuildError,
@@ -17,8 +16,8 @@ use vulkano::memory::DeviceMemoryAllocError;
 use vulkano::pipeline::vertex::SingleBufferDefinition;
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::pipeline::{GraphicsPipeline, GraphicsPipelineCreationError};
-use vulkano::sampler::Sampler;
-use vulkano::sync::{self, FlushError, GpuFuture, NowFuture};
+use vulkano::sampler::{Filter, MipmapMode, Sampler, SamplerAddressMode, SamplerCreationError};
+use vulkano::sync::{self, FlushError, GpuFuture};
 use vulkano::OomError;
 
 use crate::shaders::{julia_frag, julia_vert};
@@ -104,7 +103,12 @@ impl JuliaRender {
         S: ImageViewAccess + Send + Sync + 'static,
         C: ImageViewAccess + Send + Sync + 'static,
     {
-        self.draw_after(sync::now(context.device().clone()), sampled_image, output_image, context)
+        self.draw_after(
+            sync::now(context.device().clone()),
+            sampled_image,
+            output_image,
+            context,
+        )
     }
 
     pub fn draw_after<S, C, F>(
@@ -119,7 +123,20 @@ impl JuliaRender {
         C: ImageViewAccess + Send + Sync + 'static,
         F: GpuFuture,
     {
-        let sampler = Sampler::simple_repeat_linear(context.device().clone());
+        //let sampler = Sampler::simple_repeat_linear(context.device().clone());
+        let sampler = Sampler::new(
+            context.device().clone(),
+            Filter::Nearest,
+            Filter::Nearest,
+            MipmapMode::Nearest,
+            SamplerAddressMode::ClampToEdge,
+            SamplerAddressMode::ClampToEdge,
+            SamplerAddressMode::ClampToEdge,
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+        )?;
 
         let desc_set = self
             .descriptor_sets_pool
@@ -168,22 +185,26 @@ impl JuliaRender {
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum JuliaRenderError {
-    VkRenderPassCreationErr(RenderPassCreationError),
-    VkDeviceAllocErr(DeviceMemoryAllocError),
-    VkOomErr(OomError),
-    VkFlushErr(FlushError),
-    VkGraphicsPipelineErr(GraphicsPipelineCreationError),
-    VkDescSetErr(PersistentDescriptorSetBuildError),
-    VkFramebufferErr(FramebufferCreationError),
-    VkBeginRenderPassErr(BeginRenderPassError),
-    VkDrawErr(DrawError),
-    VkCommandBufferContextErr(AutoCommandBufferBuilderContextError),
-    VkCommandBufferBuildErr(BuildError),
-    VkExecError(CommandBufferExecError),
+//#[derive(Debug, Clone)]
+impl_error! {
+    pub enum JuliaRenderError {
+        VkRenderPassCreationErr(RenderPassCreationError),
+        VkDeviceAllocErr(DeviceMemoryAllocError),
+        VkOomErr(OomError),
+        VkFlushErr(FlushError),
+        VkGraphicsPipelineErr(GraphicsPipelineCreationError),
+        VkDescSetErr(PersistentDescriptorSetBuildError),
+        VkFramebufferErr(FramebufferCreationError),
+        VkBeginRenderPassErr(BeginRenderPassError),
+        VkDrawErr(DrawError),
+        VkCommandBufferContextErr(AutoCommandBufferBuilderContextError),
+        VkCommandBufferBuildErr(BuildError),
+        VkExecErr(CommandBufferExecError),
+        VkSamplerErr(SamplerCreationError),
+    }
 }
 
+/*
 use JuliaRenderError::*;
 
 macro_rules! impl_display {
@@ -244,6 +265,7 @@ impl_from_err!(
 );
 impl_from_err!(BuildError, VkCommandBufferBuildErr);
 impl_from_err!(CommandBufferExecError, VkExecError);
+*/
 
 mod pass {
     use vulkano::format::{ClearValue, Format};

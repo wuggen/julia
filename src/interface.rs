@@ -179,7 +179,6 @@ impl JuliaInterface {
 
         let monitor = events_loop.get_primary_monitor();
 
-        /*
         let phys_size = monitor.get_dimensions();
         let log_size = phys_size.to_logical(monitor.get_hidpi_factor());
 
@@ -188,11 +187,10 @@ impl JuliaInterface {
 
         let phys_min_dim = f64::min(phys_size.width, phys_size.height);
         let phys_win_dim = phys_min_dim * 0.8;
-        */
 
-        //let win_size = LogicalSize::new(win_dim, win_dim);
-        let win_size = LogicalSize::new(640.0, 640.0);
-        let phys_win_dim = win_size.to_physical(monitor.get_hidpi_factor()).height;
+        let win_size = LogicalSize::new(win_dim, win_dim);
+        //let win_size = LogicalSize::new(640.0, 640.0);
+        //let phys_win_dim = win_size.to_physical(monitor.get_hidpi_factor()).height;
 
         let surface = WindowBuilder::new()
             .with_dimensions(win_size)
@@ -317,40 +315,6 @@ impl JuliaInterface {
 
         Ok(())
     }
-}
-
-macro_rules! impl_error {
-    (pub enum $enum_name:ident { $($enum_var:ident ($base_err:ty)),* ,}) => {
-        impl_error! {
-            pub enum $enum_name { $($enum_var($base_err)),* }
-        }
-    };
-
-    (pub enum $enum_name:ident { $($enum_var:ident ($base_err:ty)),*}) => {
-        #[derive(Debug)]
-        pub enum $enum_name {
-            $($enum_var($base_err)),*
-        }
-
-        use $enum_name::*;
-
-        impl Display for $enum_name {
-            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-                match self {
-                    $($enum_var(e) => write!(f, "{}: {}", stringify!($enum_name), e)),*
-                }
-            }
-        }
-
-        impl Error for $enum_name {}
-
-        $(impl From<$base_err> for $enum_name {
-            #[inline]
-            fn from(err: $base_err) -> $enum_name {
-                $enum_var(err)
-            }
-        })*
-    };
 }
 
 impl_error! {

@@ -7,6 +7,8 @@ use vulkano::instance::{
 use vulkano::pipeline::{ComputePipeline, ComputePipelineCreationError};
 use vulkano::OomError;
 
+use palette::Srgba;
+
 #[macro_use]
 extern crate gramit;
 use gramit::{Vec2, Vec4};
@@ -16,6 +18,40 @@ use std::iter;
 use std::path::Path;
 use std::sync::Arc;
 
+macro_rules! impl_error {
+    (pub enum $enum_name:ident { $($enum_var:ident ($base_err:ty)),* ,}) => {
+        impl_error! {
+            pub enum $enum_name { $($enum_var($base_err)),* }
+        }
+    };
+
+    (pub enum $enum_name:ident { $($enum_var:ident ($base_err:ty)),*}) => {
+        #[derive(Debug)]
+        pub enum $enum_name {
+            $($enum_var($base_err)),*
+        }
+
+        use $enum_name::*;
+
+        impl Display for $enum_name {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                match self {
+                    $($enum_var(e) => write!(f, "{}: {}", stringify!($enum_name), e)),*
+                }
+            }
+        }
+
+        impl Error for $enum_name {}
+
+        $(impl From<$base_err> for $enum_name {
+            #[inline]
+            fn from(err: $base_err) -> $enum_name {
+                $enum_var(err)
+            }
+        })*
+    };
+}
+
 mod export;
 mod image;
 mod render;
@@ -24,7 +60,6 @@ mod shaders;
 pub mod interface;
 
 use export::JuliaExport;
-//use interface::JuliaInterface;
 use shaders::julia_comp;
 
 type CompDesc = PipelineLayout<julia_comp::Layout>;
@@ -46,8 +81,11 @@ pub struct JuliaData {
 impl JuliaData {
     fn into_shader_data(self) -> julia_comp::ty::Data {
         let mut color = [[0f32; 4]; 3];
-        for (i, arr) in color.iter_mut().enumerate() {
-            arr.copy_from_slice(self.color[i].as_ref());
+        for (c, orig) in color.iter_mut().zip(self.color.iter()) {
+            let nonlin = Srgba::new(orig.x, orig.y, orig.z, orig.w);
+            let lin = nonlin.into_linear();
+            let (r, g, b, a) = lin.into_components();
+            *c = [r, g, b, a];
         }
 
         let mut c = [0f32; 2];

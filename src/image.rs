@@ -13,6 +13,10 @@ use vulkano::pipeline::ComputePipeline;
 use vulkano::sync::{self, GpuFuture, NowFuture};
 use vulkano::OomError;
 
+use gramit::Vec4;
+
+use palette::{Srgba, LinSrgba};
+
 use crate::shaders::julia_comp;
 use crate::{CompDesc, JuliaContext, JuliaData};
 

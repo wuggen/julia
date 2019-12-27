@@ -38,7 +38,7 @@ struct JuliaArgs {
     ci: f32,
 
     /// The number of iterations to compute.
-    #[structopt(short = "m", long = "iters", default_value = "500")]
+    #[structopt(short = "m", long = "iters", default_value = "100")]
     iters: u32,
 
     /// The pixel width of the output image.
@@ -89,7 +89,7 @@ impl JuliaArgs {
                 fn to_hex(c: Vec4) -> String {
                     let c = Srgb::new(c[0], c[1], c[2]);
                     let c = Srgb::<u8>::from_format(c);
-                    format!("{:x}{:x}{:x}", c.red, c.green, c.blue)
+                    format!("{:02x}{:02x}{:02x}", c.red, c.green, c.blue)
                 }
 
                 PathBuf::from(format!(
@@ -161,7 +161,7 @@ fn parse_gradient(s: &str) -> Result<([Vec4; 3], f32), ParseGradientError> {
 
     let (c3, midpt) = match components.next() {
         // No third component, flat gradient between two colors
-        None => (Srgb::<f32>::new(1.0, 1.0, 1.0), 1.0),
+        None => (Srgb::<f32>::new(1.0, 1.0, 1.0), 0.9999999),
         Some(s) => match named::from_str(s).or_else(|| parse_hexcode(s)) {
             // Third component isn't a color, truncated gradient between two colors
             None => (c2, f32::from_str(s).map_err(|_| ParseGradientError)?),

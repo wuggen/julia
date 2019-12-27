@@ -2,16 +2,21 @@ use vulkano::command_buffer::{AutoCommandBuffer, CommandBufferExecFuture};
 use vulkano::image::swapchain::SwapchainImage;
 use vulkano::image::ImageUsage;
 use vulkano::swapchain::{
-    self, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreationError,
+    self, AcquireError, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreationError,
 };
 use vulkano::sync::{GpuFuture, JoinFuture, NowFuture, SharingMode};
 
 use vulkano_win::VkSurfaceBuild;
 
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::{ElementState, Event, EventsLoop, MouseButton, Window, WindowBuilder, WindowEvent};
+use winit::{
+    ElementState, Event, EventsLoop, KeyboardInput, ModifiersState, MouseButton, MouseScrollDelta,
+    VirtualKeyCode, Window, WindowBuilder, WindowEvent,
+};
 
-use gramit::{Vec2, Vec4, Vector};
+use gramit::{Angle, Vec2, Vec4, Vector};
+
+use palette::{Hsv, RgbHue, Srgb};
 
 use crate::image::{JuliaImage, JuliaImageError};
 use crate::render::{JuliaRender, JuliaRenderError};
@@ -19,13 +24,15 @@ use crate::{JuliaContext, JuliaData};
 
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
-use std::sync::Arc;
+use std::io::{self, Write};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub struct JuliaInterface {
     events_loop: EventsLoop,
     state: JuliaState,
     surface: Arc<Surface<Window>>,
-    swapchain: Arc<Swapchain<Window>>,
+    swapchain: Mutex<Arc<Swapchain<Window>>>,
     swapchain_images: Vec<Arc<SwapchainImage<Window>>>,
     image: JuliaImage,
     render: JuliaRender,
@@ -35,6 +42,8 @@ pub struct JuliaInterface {
 struct JuliaState {
     data: JuliaData,
     mouse_state: MouseState,
+    hsv_colors: [Hsv; 3],
+    active_color: u8,
     close_requested: bool,
 }
 
@@ -49,8 +58,16 @@ impl JuliaState {
         self.data.extents *= factor;
     }
 
+    pub fn set_extents(&mut self, extents: Vec2) {
+        self.data.extents = extents;
+    }
+
     pub fn pan(&mut self, offset: Vec2) {
         self.data.center += offset;
+    }
+
+    pub fn set_center(&mut self, center: Vec2) {
+        self.data.center = center;
     }
 
     pub fn set_c(&mut self, c: Vec2) {
@@ -69,8 +86,81 @@ impl JuliaState {
         self.close_requested = true;
     }
 
+    pub fn extents(&self) -> Vec2 {
+        self.data.extents
+    }
+
+    pub fn center(&self) -> Vec2 {
+        self.data.center
+    }
+
+    pub fn c(&self) -> Vec2 {
+        self.data.c
+    }
+
+    pub fn n(&self) -> u32 {
+        self.data.n
+    }
+
+    pub fn iters(&self) -> u32 {
+        self.data.iters
+    }
+
     pub fn julia_set(&self) -> &JuliaData {
         &self.data
+    }
+
+    pub fn active_color(&self) -> Vec4 {
+        let hsv = self.hsv_colors[self.active_color_idx()];
+        let rgb = Srgb::from(hsv);
+        let (r, g, b) = rgb.into_components();
+        vec4!(r, g, b, 1.0)
+    }
+
+    pub fn active_color_idx(&self) -> usize {
+        self.active_color as usize
+    }
+
+    pub fn set_active_color(&mut self, idx: usize) -> Result<(), &'static str> {
+        if idx < 3 {
+            self.active_color = idx as u8;
+            Ok(())
+        } else {
+            Err("Index out of range")
+        }
+    }
+
+    pub fn adjust_hue(&mut self, amount: f32) {
+        let mut hsv = self.hsv_colors[self.active_color_idx()];
+        let mut hue = Angle::from_radians(hsv.hue.to_radians());
+        hue += Angle::from_degrees(amount);
+        hsv.hue = RgbHue::from_radians(hue.radians());
+        self.hsv_colors[self.active_color_idx()] = hsv;
+        self.data.color[self.active_color_idx()] = self.active_color();
+    }
+
+    pub fn adjust_saturation(&mut self, amount: f32) {
+        let mut hsv = self.hsv_colors[self.active_color_idx()];
+        hsv.saturation += amount / 360.0;
+        if hsv.saturation > 1.0 {
+            hsv.saturation = 1.0;
+        } else if hsv.saturation < 0.0 {
+            hsv.saturation = 0.0;
+        }
+        self.hsv_colors[self.active_color_idx()] = hsv;
+        self.data.color[self.active_color_idx()] = self.active_color();
+    }
+
+    pub fn adjust_value(&mut self, amount: f32) {
+        let mut hsv = self.hsv_colors[self.active_color_idx()];
+        hsv.value += amount / 360.0;
+        if hsv.value > 1.0 {
+            hsv.value = 1.0;
+        } else if hsv.value < 0.0 {
+            hsv.value = 0.0;
+        }
+        self.hsv_colors[self.active_color_idx()] = hsv;
+        self.data.color[self.active_color_idx()] = self.active_color();
     }
 
     pub fn close_requested(&self) -> bool {
@@ -162,12 +252,216 @@ fn event_callback<'ifc>(
                     }
                 }
 
+                WindowEvent::MouseWheel { delta, .. } => {
+                    let factor: f32 = match delta {
+                        MouseScrollDelta::LineDelta(_, y) => 0.5 * y as f32,
+                        MouseScrollDelta::PixelDelta(LogicalPosition { y, .. }) => 0.5 * y as f32,
+                    };
+
+                    let factor = if factor < 0.0 {
+                        1.0 + factor.abs()
+                    } else {
+                        1.0 / (1.0 + factor)
+                    };
+
+                    julia_state.zoom(factor)
+                }
+
+                WindowEvent::KeyboardInput {
+                    input:
+                        KeyboardInput {
+                            scancode,
+                            virtual_keycode,
+                            state,
+                            modifiers,
+                            ..
+                        },
+                    ..
+                } => {
+                    if let ElementState::Pressed = state {
+                        if let Some(code) = virtual_keycode {
+                            match code {
+                                VirtualKeyCode::Q | VirtualKeyCode::Escape => julia_state.close(),
+                                VirtualKeyCode::Add => julia_state.zoom(1.0 / 1.1),
+                                VirtualKeyCode::Subtract => julia_state.zoom(1.1),
+                                VirtualKeyCode::Up
+                                | VirtualKeyCode::Down
+                                | VirtualKeyCode::Left
+                                | VirtualKeyCode::Right => move_c(julia_state, code, modifiers),
+                                VirtualKeyCode::PageUp => julia_state.set_n(julia_state.n() + 1),
+                                VirtualKeyCode::PageDown => {
+                                    let n = julia_state.n();
+                                    if n > 2 {
+                                        julia_state.set_n(julia_state.n() - 1);
+                                    }
+                                }
+
+                                VirtualKeyCode::O => {
+                                    julia_state.set_center(vec2!(0.0, 0.0));
+                                    julia_state.set_extents(vec2!(3.6, 3.6));
+                                }
+
+                                VirtualKeyCode::RBracket => {
+                                    julia_state.set_iters(julia_state.iters() + 10)
+                                }
+
+                                VirtualKeyCode::LBracket => {
+                                    let iters = julia_state.iters();
+                                    if iters <= 20 {
+                                        julia_state.set_iters(10);
+                                    } else {
+                                        julia_state.set_iters(iters - 10);
+                                    }
+                                }
+
+                                VirtualKeyCode::Key1 => julia_state.set_active_color(0).unwrap(),
+                                VirtualKeyCode::Key2 => julia_state.set_active_color(1).unwrap(),
+                                VirtualKeyCode::Key3 => julia_state.set_active_color(2).unwrap(),
+
+                                VirtualKeyCode::R => julia_state.adjust_hue(5.0),
+                                VirtualKeyCode::F => julia_state.adjust_hue(-5.0),
+                                VirtualKeyCode::T => julia_state.adjust_saturation(5.0),
+                                VirtualKeyCode::G => julia_state.adjust_saturation(-5.0),
+                                VirtualKeyCode::Y => julia_state.adjust_value(5.0),
+                                VirtualKeyCode::H => julia_state.adjust_value(-5.0),
+                                VirtualKeyCode::U => julia_state.data.color_midpoint += 0.05,
+                                VirtualKeyCode::J => julia_state.data.color_midpoint -= 0.05,
+
+                                VirtualKeyCode::W => {
+                                    julia_state.pan(vec2!(0.0, julia_state.extents().y / 30.0))
+                                }
+                                VirtualKeyCode::A => {
+                                    julia_state.pan(vec2!(-julia_state.extents().y / 30.0, 0.0))
+                                }
+                                VirtualKeyCode::S => {
+                                    julia_state.pan(vec2!(0.0, -julia_state.extents().y / 30.0))
+                                }
+                                VirtualKeyCode::D => {
+                                    julia_state.pan(vec2!(julia_state.extents().y / 30.0, 0.0))
+                                }
+
+                                _ => (),
+                            }
+                        }
+                    }
+                }
+
                 WindowEvent::CloseRequested => julia_state.close(),
 
                 _ => (),
             }
         }
     }
+}
+
+fn move_c(julia_state: &mut JuliaState, key: VirtualKeyCode, mods: ModifiersState) {
+    let dist = 0.001 * {
+        if mods.shift {
+            0.1
+        } else if mods.alt {
+            10.0
+        } else if mods.ctrl {
+            100.0
+        } else {
+            1.0
+        }
+    };
+
+    let mut c = julia_state.c();
+
+    match key {
+        VirtualKeyCode::Up => c += vec2!(0.0, dist),
+        VirtualKeyCode::Down => c -= vec2!(0.0, dist),
+        VirtualKeyCode::Left => c -= vec2!(dist, 0.0),
+        VirtualKeyCode::Right => c += vec2!(dist, 0.0),
+        _ => (),
+    }
+
+    julia_state.set_c(c);
+}
+
+fn print_state<W: Write>(state: &JuliaState, writer: &mut W) -> io::Result<()> {
+    fn fmt_complex(z: Vec2) -> String {
+        let op = if z.y < 0.0 { '-' } else { '+' };
+
+        format!("{} {} {}i", z.x, op, z.y.abs())
+    }
+
+    fn to_hex(c: Vec4) -> String {
+        let c = Srgb::new(c[0], c[1], c[2]);
+        let c = Srgb::<u8>::from_format(c);
+        format!("{:02x}{:02x}{:02x}", c.red, c.green, c.blue)
+    }
+
+    fn wrap_active(s: &str, active: usize, i: usize) -> String {
+        let brackets = if i == active { ("[", "]") } else { ("", "") };
+
+        format!("{}{}{}", brackets.0, s, brackets.1)
+    }
+
+    fn fmt_color(c: Vec4, active: usize, i: usize) -> String {
+        wrap_active(&format!("#{}", to_hex(c)), active, i)
+    }
+
+    fn fmt_gradient(colors: &[Vec4; 3], active: usize, midpt: f32) -> String {
+        format!(
+            "{}, {}, {} ({})",
+            fmt_color(colors[0], active, 0),
+            fmt_color(colors[1], active, 1),
+            fmt_color(colors[2], active, 2),
+            midpt
+        )
+    }
+
+    fn fmt_single_hsv(c: Hsv, active: usize, i: usize) -> String {
+        wrap_active(
+            &format!(
+                "H{:5.1} S{:.2} V{:.2}",
+                c.hue.to_positive_degrees(),
+                c.saturation,
+                c.value,
+            ),
+            active,
+            i,
+        )
+    }
+
+    fn fmt_hsv(colors: &[Hsv; 3], active: usize) -> String {
+        format!(
+            "{}, {}, {}",
+            fmt_single_hsv(colors[0], active, 0),
+            fmt_single_hsv(colors[1], active, 1),
+            fmt_single_hsv(colors[2], active, 2),
+        )
+    }
+
+    let range1 = state.center() - 0.5 * state.extents();
+    let range2 = state.center() + 0.5 * state.extents();
+
+    writeln!(
+        writer,
+        r#"
+=============================
+======= Current state =======
+=============================
+f(x) = x^{} + ({})
+{} Iterations
+Range: ({}) -- ({})
+Color gradient: {}
+    {}
+============================="#,
+        state.n(),
+        fmt_complex(state.c()),
+        state.iters(),
+        fmt_complex(range1),
+        fmt_complex(range2),
+        fmt_gradient(
+            &state.data.color,
+            state.active_color_idx(),
+            state.data.color_midpoint
+        ),
+        fmt_hsv(&state.hsv_colors, state.active_color_idx()),
+    )
 }
 
 impl JuliaInterface {
@@ -243,17 +537,31 @@ impl JuliaInterface {
             old_swapchain,
         )?;
 
+        let swapchain = Mutex::new(swapchain);
+
         let image = JuliaImage::new(context, dimensions.clone())?;
         let render = JuliaRender::new(context, format, 1)?;
+
+        let data = init_state.unwrap_or_else(default_state);
+        let mut hsv_colors = [Hsv::new(0.0, 0.0, 0.0); 3];
+        hsv_colors
+            .iter_mut()
+            .zip(data.color.iter())
+            .for_each(|(hsv, vec)| {
+                let rgb = Srgb::new(vec.x, vec.y, vec.z);
+                *hsv = Hsv::from(rgb);
+            });
 
         Ok(JuliaInterface {
             events_loop,
             state: JuliaState {
-                data: init_state.unwrap_or_else(default_state),
+                data,
                 mouse_state: MouseState {
                     pos: LogicalPosition { x: 0.0, y: 0.0 },
                     dragging: false,
                 },
+                active_color: 0,
+                hsv_colors,
                 close_requested: false,
             },
             surface,
@@ -268,7 +576,7 @@ impl JuliaInterface {
         let compute_future = self.image.draw(self.state.data, context)?;
 
         let (idx, acquire_future) =
-            swapchain::acquire_next_image(self.swapchain.clone(), None).unwrap();
+            swapchain::acquire_next_image(self.swapchain.lock().unwrap().clone(), None)?;
         let swapchain_image = self.swapchain_images[idx].clone();
 
         Ok(self
@@ -279,7 +587,11 @@ impl JuliaInterface {
                 swapchain_image,
                 context,
             )?
-            .then_swapchain_present(context.queue().clone(), self.swapchain.clone(), idx))
+            .then_swapchain_present(
+                context.queue().clone(),
+                self.swapchain.lock().unwrap().clone(),
+                idx,
+            ))
     }
 
     fn update(&mut self, context: &JuliaContext) -> Result<(), JuliaInterfaceError> {
@@ -301,16 +613,22 @@ impl JuliaInterface {
     }
 
     pub fn run(&mut self, context: &JuliaContext) -> Result<(), JuliaInterfaceError> {
-        //let mut count = 0;
-        while !self.state.close_requested {
+        let mut presented_state = self.state;
+        let mut presented_time = Instant::now();
+        print_state(&presented_state, &mut io::stdout());
+
+        while !self.state.close_requested() {
             self.update(context)?;
 
-            /*
-            count += 1;
-            if count % 60 == 0 {
-                eprintln!("{:#?}", self.state);
+            if presented_time.elapsed().as_secs_f64() > 0.25
+                && (self.state.data != presented_state.data
+                    || self.state.active_color != presented_state.active_color
+                    || self.state.hsv_colors != presented_state.hsv_colors)
+            {
+                presented_state = self.state;
+                presented_time = Instant::now();
+                print_state(&presented_state, &mut io::stdout());
             }
-            */
         }
 
         Ok(())
@@ -323,5 +641,6 @@ impl_error! {
         JuliaRenderErr(JuliaRenderError),
         VkWinCreationErr(vulkano_win::CreationError),
         VkSwapchainCreationErr(SwapchainCreationError),
+        VkSwapchainAcquireErr(AcquireError),
     }
 }

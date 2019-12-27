@@ -68,12 +68,14 @@ float julia(vec2 z, float R) {
   float nu;
   if (i < data.iters) {
     uint k = i + 1;
-    nu = float(k) - log(log(length(z)) / log(R)) / log(float(data.n));
+    nu = float(i) - log(log(length(z)) / log(R)) / log(float(data.n));
+    //nu = float(i) - log(log(length(z)) / log(R));
   } else {
     nu = float(i);
   }
 
   return nu / float(data.iters);
+  //return float(i) / float(data.iters);
 }
 
 float mandelbrot(vec2 c, float R) {
@@ -90,7 +92,8 @@ float mandelbrot(vec2 c, float R) {
   float nu;
   if (i < data.iters) {
     uint k = i + 1;
-    nu = float(k) - log(log(length(z)) / log(1.5)) / log(float(data.n));
+    //nu = float(k) - log(log(length(z)) / log(R)) / log(max(data.extents.x, data.extents.y));
+    nu = float(k) - log(log(length(z)) / log(R)) / log(R);
   } else {
     nu = float(i);
   }
@@ -108,7 +111,9 @@ vec2 get_z(vec2 offs) {
 }
 
 void main() {
-  float R = max(float(data.iters), 4.0);
+  //float R = max(float(data.iters), 4.0);
+  //float R = max(sqrt(float(data.iters)), 4.0);
+  float R = 1000.0;
 
   vec2 z1 = get_z(vec2(1.0/3.0, 1.0/3.0));
   vec2 z2 = get_z(vec2(1.0/3.0, 2.0/3.0));

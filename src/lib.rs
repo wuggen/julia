@@ -62,6 +62,8 @@ pub mod interface;
 use export::JuliaExport;
 use shaders::julia_comp;
 
+pub use export::ImgDimensions;
+
 type CompDesc = PipelineLayout<julia_comp::Layout>;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -108,12 +110,30 @@ impl JuliaData {
             extents,
         }
     }
-}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ImgDimensions {
-    pub width: u32,
-    pub height: u32,
+    pub fn name(&self) -> String {
+        use palette::Srgb;
+
+        fn to_hex(c: Vec4) -> String {
+            let c = Srgb::new(c[0], c[1], c[2]);
+            let c = Srgb::<u8>::from_format(c);
+            format!("{:02x}{:02x}{:02x}", c.red, c.green, c.blue)
+        }
+
+        format!("x{}_{:.5}_{:.5}i_m{}_o{:.4}-{:.4}_e{:.8}_c{}-{}-{}-{:.2}",
+            self.n,
+            self.c.x,
+            self.c.y,
+            self.iters,
+            self.center.x,
+            self.center.y,
+            f32::max(self.extents.x, self.extents.y),
+            to_hex(self.color[0]),
+            to_hex(self.color[1]),
+            to_hex(self.color[2]),
+            self.color_midpoint,
+        )
+    }
 }
 
 #[derive(Debug)]

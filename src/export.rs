@@ -7,12 +7,18 @@ use vulkano::sync::GpuFuture;
 
 use palette::{LinSrgba, Srgba};
 
-use crate::{ImgDimensions, JuliaContext, JuliaData};
+use crate::{JuliaContext, JuliaData};
 
 use std::cell::Cell;
 use std::fmt::{self, Debug, Formatter};
 use std::path::Path;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImgDimensions {
+    pub width: u32,
+    pub height: u32,
+}
 
 pub struct JuliaExport {
     cached_data: Cell<Option<JuliaExportCache>>,

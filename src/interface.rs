@@ -17,6 +17,7 @@ use gramit::{Angle, Vec2, Vec4, Vector};
 
 use palette::{Hsv, RgbHue, Srgb};
 
+use crate::export::{ImgDimensions, JuliaExport};
 use crate::image::{JuliaImage, JuliaImageError};
 use crate::render::{JuliaRender, JuliaRenderError};
 use crate::{JuliaContext, JuliaData};
@@ -24,6 +25,7 @@ use crate::{JuliaContext, JuliaData};
 use std::error::Error;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::io::{self, Write};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -35,6 +37,7 @@ pub struct JuliaInterface {
     swapchain_images: Vec<Arc<SwapchainImage<Window>>>,
     image: JuliaImage,
     render: JuliaRender,
+    export: JuliaExport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -44,6 +47,8 @@ struct JuliaState {
     hsv_colors: [Hsv; 3],
     active_color: u8,
     close_requested: bool,
+    export_dimensions: ImgDimensions,
+    export_requested: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -276,7 +281,9 @@ fn event_callback<'ifc>(
                         if let Some(code) = virtual_keycode {
                             match code {
                                 VirtualKeyCode::Q | VirtualKeyCode::Escape => julia_state.close(),
-                                VirtualKeyCode::Add => julia_state.zoom(1.0 / 1.1),
+                                VirtualKeyCode::Add | VirtualKeyCode::Equals => {
+                                    julia_state.zoom(1.0 / 1.1)
+                                }
                                 VirtualKeyCode::Subtract => julia_state.zoom(1.1),
                                 VirtualKeyCode::Up
                                 | VirtualKeyCode::Down
@@ -290,10 +297,8 @@ fn event_callback<'ifc>(
                                     }
                                 }
 
-                                VirtualKeyCode::O => {
-                                    julia_state.set_center(vec2!(0.0, 0.0));
-                                    julia_state.set_extents(vec2!(3.6, 3.6));
-                                }
+                                VirtualKeyCode::C => julia_state.set_center(vec2!(0.0, 0.0)),
+                                VirtualKeyCode::Z => julia_state.set_extents(vec2!(3.6, 3.6)),
 
                                 VirtualKeyCode::RBracket => {
                                     julia_state.set_iters(julia_state.iters() + 10)
@@ -320,6 +325,18 @@ fn event_callback<'ifc>(
                                 VirtualKeyCode::H => julia_state.adjust_value(-5.0),
                                 VirtualKeyCode::U => julia_state.data.color_midpoint += 0.05,
                                 VirtualKeyCode::J => julia_state.data.color_midpoint -= 0.05,
+                                VirtualKeyCode::I => julia_state.export_dimensions.width += 40,
+                                VirtualKeyCode::K => {
+                                    if julia_state.export_dimensions.width > 40 {
+                                        julia_state.export_dimensions.width -= 40;
+                                    }
+                                }
+                                VirtualKeyCode::O => julia_state.export_dimensions.height += 40,
+                                VirtualKeyCode::L => {
+                                    if julia_state.export_dimensions.height > 40 {
+                                        julia_state.export_dimensions.height -= 40;
+                                    }
+                                }
 
                                 VirtualKeyCode::W => {
                                     julia_state.pan(vec2!(0.0, julia_state.extents().y / 30.0))
@@ -333,6 +350,8 @@ fn event_callback<'ifc>(
                                 VirtualKeyCode::D => {
                                     julia_state.pan(vec2!(julia_state.extents().y / 30.0, 0.0))
                                 }
+
+                                VirtualKeyCode::E => julia_state.export_requested = true,
 
                                 _ => (),
                             }
@@ -443,7 +462,7 @@ f(x) = x^{} + ({})
 Range: ({}) -- ({})
 Color gradient: {}
     {}
-============================="#,
+Export dimensions: {}x{}"#,
         state.n(),
         fmt_complex(state.c()),
         state.iters(),
@@ -455,6 +474,8 @@ Color gradient: {}
             state.data.color_midpoint
         ),
         fmt_hsv(&state.hsv_colors, state.active_color_idx()),
+        state.export_dimensions.width,
+        state.export_dimensions.height,
     )
 }
 
@@ -462,6 +483,7 @@ impl JuliaInterface {
     pub fn new(
         context: &JuliaContext,
         init_state: Option<JuliaData>,
+        init_export_dimensions: Option<ImgDimensions>,
     ) -> Result<JuliaInterface, JuliaInterfaceError> {
         let events_loop = EventsLoop::new();
 
@@ -477,8 +499,6 @@ impl JuliaInterface {
         let phys_win_dim = phys_min_dim * 0.8;
 
         let win_size = LogicalSize::new(win_dim, win_dim);
-        //let win_size = LogicalSize::new(640.0, 640.0);
-        //let phys_win_dim = win_size.to_physical(monitor.get_hidpi_factor()).height;
 
         let surface = WindowBuilder::new()
             .with_dimensions(win_size)
@@ -546,6 +566,12 @@ impl JuliaInterface {
                 *hsv = Hsv::from(rgb);
             });
 
+        let export_dimensions = init_export_dimensions.unwrap_or_else(|| {
+            let [width, height] = dimensions;
+            ImgDimensions { width, height }
+        });
+        let export = JuliaExport::new();
+
         Ok(JuliaInterface {
             events_loop,
             state: JuliaState {
@@ -557,12 +583,15 @@ impl JuliaInterface {
                 active_color: 0,
                 hsv_colors,
                 close_requested: false,
+                export_dimensions,
+                export_requested: false,
             },
             surface,
             swapchain,
             swapchain_images,
             image,
             render,
+            export,
         })
     }
 
@@ -606,6 +635,41 @@ impl JuliaInterface {
         Ok(())
     }
 
+    pub fn export(&mut self, context: &JuliaContext) {
+        let ImgDimensions { width, height } = self.state.export_dimensions;
+
+        let filename = PathBuf::from(format!(
+            "{}_{}x{}.png",
+            self.state.data.name(),
+            width,
+            height,
+        ));
+
+        let mut export_data = self.state.data;
+        if width != height {
+            if width < height {
+                let ratio = height as f32 / width as f32;
+                export_data.extents.y *= ratio;
+            } else {
+                let ratio = width as f32 / height as f32;
+                export_data.extents.x *= ratio;
+            }
+        }
+
+        print!("Exporting to {} ...", filename.to_str().unwrap());
+        io::stdout().flush().unwrap();
+        self.export.export(
+            self.state.export_dimensions,
+            &export_data,
+            &filename,
+            context,
+        );
+        println!(" Done!");
+
+        // Ignore any window events that came in during export
+        self.events_loop.poll_events(|_| ());
+    }
+
     pub fn run(&mut self, context: &JuliaContext) -> Result<(), JuliaInterfaceError> {
         let mut presented_state = self.state;
         let mut presented_time = Instant::now();
@@ -617,11 +681,17 @@ impl JuliaInterface {
             if presented_time.elapsed().as_secs_f64() > 0.25
                 && (self.state.data != presented_state.data
                     || self.state.active_color != presented_state.active_color
-                    || self.state.hsv_colors != presented_state.hsv_colors)
+                    || self.state.hsv_colors != presented_state.hsv_colors
+                    || self.state.export_dimensions != presented_state.export_dimensions)
             {
                 presented_state = self.state;
                 presented_time = Instant::now();
                 print_state(&presented_state, &mut io::stdout()).unwrap();
+            }
+
+            if self.state.export_requested {
+                self.export(context);
+                self.state.export_requested = false;
             }
         }
 

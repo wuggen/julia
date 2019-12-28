@@ -1,5 +1,5 @@
 use julia::interface::JuliaInterface;
-use julia::{JuliaContext, JuliaData};
+use julia::{JuliaContext, JuliaData, ImgDimensions};
 
 #[macro_use]
 extern crate gramit;
@@ -219,16 +219,9 @@ fn main() {
 
     let context = JuliaContext::new().expect("failed to create JuliaContext");
 
-    //let dims = ImgDimensions {
-    //    width: args.width,
-    //    height: args.height,
-    //};
-
-    let aspect = (args.width as f32) / (args.height as f32);
-    let (extent_x, extent_y) = if args.width < args.height {
-        (args.extent * aspect, args.extent)
-    } else {
-        (args.extent, args.extent / aspect)
+    let dims = ImgDimensions {
+        width: (args.width / 40) * 40,
+        height: (args.height / 40) * 40,
     };
 
     let data = JuliaData {
@@ -240,11 +233,10 @@ fn main() {
         iters: args.iters,
 
         center: args.center,
-        extents: vec2!(extent_x, extent_y),
+        extents: vec2!(args.extent, args.extent),
     };
 
-    //context.export(dims, &data, &args.filename());
-
-    let mut interface = JuliaInterface::new(&context, Some(data)).expect("failed to create JuliaInterface");
+    let mut interface = JuliaInterface::new(&context, Some(data), Some(dims))
+        .expect("failed to create JuliaInterface");
     interface.run(&context).unwrap();
 }

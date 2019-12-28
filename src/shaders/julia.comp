@@ -68,34 +68,17 @@ float julia(vec2 z, float R) {
   float nu;
   if (i < data.iters) {
     uint k = i + 1;
-    nu = float(i) - log(log(length(z)) / log(R)) / log(float(data.n));
-    //nu = float(i) - log(log(length(z)) / log(R));
-  } else {
-    nu = float(i);
-  }
 
-  return nu / float(data.iters);
-  //return float(i) / float(data.iters);
-}
-
-float mandelbrot(vec2 c, float R) {
-  vec2 z = vec2(0);
-  uint i;
-  for (i = 0; i < data.iters; i += 1) {
-    if (length(z) > R) {
-      break;
-    } else {
-      z = mandelbrot_iteration(c, z);
+    float mu = log(log(length(z)) / log(R)) / log(float(data.n));
+    if (mu < 0.0) {
+      mu = 0.0;
+    } else if (mu > 1.0) {
+      mu = 1.0;
     }
-  }
 
-  float nu;
-  if (i < data.iters) {
-    uint k = i + 1;
-    //nu = float(k) - log(log(length(z)) / log(R)) / log(max(data.extents.x, data.extents.y));
-    nu = float(k) - log(log(length(z)) / log(R)) / log(R);
+    nu = float(k) - mu;
   } else {
-    nu = float(i);
+    return 1.0;
   }
 
   return nu / float(data.iters);
@@ -107,35 +90,15 @@ vec2 get_z(vec2 offs) {
   z.y = -z.y;
 
   return data.center + z * (data.extents / 2.0);
-  //return z;
 }
 
 void main() {
-  //float R = max(float(data.iters), 4.0);
-  //float R = max(sqrt(float(data.iters)), 4.0);
-  float R = 1000.0;
+  float R = 250.0 * float(data.n);
 
   vec2 z1 = get_z(vec2(1.0/3.0, 1.0/3.0));
   vec2 z2 = get_z(vec2(1.0/3.0, 2.0/3.0));
   vec2 z3 = get_z(vec2(2.0/3.0, 1.0/3.0));
   vec2 z4 = get_z(vec2(2.0/3.0, 2.0/3.0));
-
-  /*
-  if (coords.x == 0 || coords.y == 0) {
-    imageStore(img, ivec2(gl_GlobalInvocationID.xy), vec4(1, 0, 1, 1));
-    return;
-  }
-
-  if (coords.x == 1 && (abs(z.y - 1.0) < 0.025 || abs(z.y + 1.0) < 0.025)) {
-    imageStore(img, ivec2(gl_GlobalInvocationID.xy), vec4(1, 0, 1, 1));
-    return;
-  }
-
-  if (coords.y == -1 && (abs(z.x - 1.0) < 0.025 || abs(z.x + 1.0) < 0.025)) {
-    imageStore(img, ivec2(gl_GlobalInvocationID.xy), vec4(1, 0, 1, 1));
-    return;
-  }
-  */
 
   float interpolant1 = julia(z1, R);
   float interpolant2 = julia(z2, R);
@@ -148,6 +111,5 @@ void main() {
   vec4 color4 = interpolate_color(interpolant4);
 
   vec4 color = 0.25 * (color1 + color2 + color3 + color4);
-  //float interpolant = mandelbrot(z, R);
   imageStore(img, ivec2(gl_GlobalInvocationID.xy), color);
 }

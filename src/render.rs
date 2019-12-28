@@ -17,7 +17,7 @@ use vulkano::pipeline::vertex::SingleBufferDefinition;
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::pipeline::{GraphicsPipeline, GraphicsPipelineCreationError};
 use vulkano::sampler::{Filter, MipmapMode, Sampler, SamplerAddressMode, SamplerCreationError};
-use vulkano::sync::{self, FlushError, GpuFuture};
+use vulkano::sync::{FlushError, GpuFuture};
 use vulkano::OomError;
 
 use crate::shaders::{julia_frag, julia_vert};
@@ -91,24 +91,6 @@ impl JuliaRender {
             buffer,
             descriptor_sets_pool,
         })
-    }
-
-    pub fn draw<S, C>(
-        &self,
-        sampled_image: S,
-        output_image: C,
-        context: &JuliaContext,
-    ) -> Result<impl GpuFuture, JuliaRenderError>
-    where
-        S: ImageViewAccess + Send + Sync + 'static,
-        C: ImageViewAccess + Send + Sync + 'static,
-    {
-        self.draw_after(
-            sync::now(context.device().clone()),
-            sampled_image,
-            output_image,
-            context,
-        )
     }
 
     pub fn draw_after<S, C, F>(

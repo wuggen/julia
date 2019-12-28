@@ -1,5 +1,5 @@
 use julia::interface::JuliaInterface;
-use julia::{ImgDimensions, JuliaContext, JuliaData};
+use julia::{JuliaContext, JuliaData};
 
 #[macro_use]
 extern crate gramit;
@@ -219,10 +219,10 @@ fn main() {
 
     let context = JuliaContext::new().expect("failed to create JuliaContext");
 
-    let dims = ImgDimensions {
-        width: args.width,
-        height: args.height,
-    };
+    //let dims = ImgDimensions {
+    //    width: args.width,
+    //    height: args.height,
+    //};
 
     let aspect = (args.width as f32) / (args.height as f32);
     let (extent_x, extent_y) = if args.width < args.height {

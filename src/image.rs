@@ -13,10 +13,6 @@ use vulkano::pipeline::ComputePipeline;
 use vulkano::sync::{self, GpuFuture, NowFuture};
 use vulkano::OomError;
 
-use gramit::Vec4;
-
-use palette::{Srgba, LinSrgba};
-
 use crate::shaders::julia_comp;
 use crate::{CompDesc, JuliaContext, JuliaData};
 
@@ -96,15 +92,6 @@ impl JuliaImage {
         .build()?;
 
         Ok(future.then_execute(context.queue().clone(), cmd_buf)?)
-    }
-
-    pub fn set_dimensions(
-        &mut self,
-        context: &JuliaContext,
-        dimensions: [u32; 2],
-    ) -> Result<(), JuliaImageError> {
-        self.image = create_image(context, dimensions)?;
-        Ok(())
     }
 
     pub fn dimensions(&self) -> [u32; 2] {

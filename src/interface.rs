@@ -1,10 +1,9 @@
-use vulkano::command_buffer::{AutoCommandBuffer, CommandBufferExecFuture};
 use vulkano::image::swapchain::SwapchainImage;
 use vulkano::image::ImageUsage;
 use vulkano::swapchain::{
     self, AcquireError, CompositeAlpha, PresentMode, Surface, Swapchain, SwapchainCreationError,
 };
-use vulkano::sync::{GpuFuture, JoinFuture, NowFuture, SharingMode};
+use vulkano::sync::{GpuFuture, SharingMode};
 
 use vulkano_win::VkSurfaceBuild;
 
@@ -104,10 +103,6 @@ impl JuliaState {
 
     pub fn iters(&self) -> u32 {
         self.data.iters
-    }
-
-    pub fn julia_set(&self) -> &JuliaData {
-        &self.data
     }
 
     pub fn active_color(&self) -> Vec4 {
@@ -270,7 +265,6 @@ fn event_callback<'ifc>(
                 WindowEvent::KeyboardInput {
                     input:
                         KeyboardInput {
-                            scancode,
                             virtual_keycode,
                             state,
                             modifiers,
@@ -615,7 +609,7 @@ impl JuliaInterface {
     pub fn run(&mut self, context: &JuliaContext) -> Result<(), JuliaInterfaceError> {
         let mut presented_state = self.state;
         let mut presented_time = Instant::now();
-        print_state(&presented_state, &mut io::stdout());
+        print_state(&presented_state, &mut io::stdout()).unwrap();
 
         while !self.state.close_requested() {
             self.update(context)?;
@@ -627,7 +621,7 @@ impl JuliaInterface {
             {
                 presented_state = self.state;
                 presented_time = Instant::now();
-                print_state(&presented_state, &mut io::stdout());
+                print_state(&presented_state, &mut io::stdout()).unwrap();
             }
         }
 

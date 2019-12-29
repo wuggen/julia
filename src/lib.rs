@@ -69,7 +69,7 @@ type CompDesc = PipelineLayout<julia_comp::Layout>;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JuliaData {
     pub color: [Vec4; 3],
-    pub color_midpoint: f32,
+    pub color_midpoint: [f32; 3],
 
     pub n: u32,
     pub c: Vec2,
@@ -120,7 +120,7 @@ impl JuliaData {
             format!("{:02x}{:02x}{:02x}", c.red, c.green, c.blue)
         }
 
-        format!("x{}_{:.5}_{:.5}i_m{}_o{:.4}-{:.4}_e{:.8}_c{}-{}-{}-{:.2}",
+        format!("x{}_{:.5}_{:.5}i_m{}_o{:.4}-{:.4}_e{:.8}_c{}-{}-{}-{:.2}-{:.2}-{:.2}",
             self.n,
             self.c.x,
             self.c.y,
@@ -131,7 +131,9 @@ impl JuliaData {
             to_hex(self.color[0]),
             to_hex(self.color[1]),
             to_hex(self.color[2]),
-            self.color_midpoint,
+            self.color_midpoint[0],
+            self.color_midpoint[1],
+            self.color_midpoint[2],
         )
     }
 }

@@ -46,6 +46,7 @@ struct JuliaState {
     mouse_state: MouseState,
     hsv_colors: [Hsv; 3],
     active_color: u8,
+    active_midpt: u8,
     close_requested: bool,
     export_dimensions: ImgDimensions,
     export_requested: bool,
@@ -126,8 +127,40 @@ impl JuliaState {
             self.active_color = idx as u8;
             Ok(())
         } else {
-            Err("Index out of range")
+            Err("index out of range")
         }
+    }
+
+    pub fn active_midpt(&self) -> f32 {
+        self.data.color_midpoint[self.active_midpt_idx()]
+    }
+
+    pub fn active_midpt_idx(&self) -> usize {
+        self.active_midpt as usize
+    }
+
+    pub fn set_active_midpt(&mut self, idx: usize) -> Result<(), &'static str> {
+        if idx < 3 {
+            self.active_midpt = idx as u8;
+            Ok(())
+        } else {
+            Err("index out of range")
+        }
+    }
+
+    pub fn adjust_active_midpt(&mut self, amount: f32) {
+        let idx = self.active_midpt_idx();
+
+        let midpt = self.data.color_midpoint[idx] + amount;
+        for (i, m) in self.data.color_midpoint.iter_mut().enumerate() {
+            if i < idx && *m > midpt {
+                *m = midpt;
+            } else if i > idx && *m < midpt {
+                *m = midpt;
+            }
+        }
+
+        self.data.color_midpoint[idx] = midpt;
     }
 
     pub fn adjust_hue(&mut self, amount: f32) {
@@ -218,7 +251,7 @@ impl Debug for JuliaInterface {
 fn default_state() -> JuliaData {
     JuliaData {
         color: [Vec4::zeros(), Vec4::ones(), Vec4::ones()],
-        color_midpoint: 0.25,
+        color_midpoint: [0.0, 0.25, 1.0],
         n: 2,
         c: vec2!(0.2, 0.0),
         iters: 100,
@@ -317,14 +350,18 @@ fn event_callback<'ifc>(
                                 VirtualKeyCode::Key2 => julia_state.set_active_color(1).unwrap(),
                                 VirtualKeyCode::Key3 => julia_state.set_active_color(2).unwrap(),
 
+                                VirtualKeyCode::Key4 => julia_state.set_active_midpt(0).unwrap(),
+                                VirtualKeyCode::Key5 => julia_state.set_active_midpt(1).unwrap(),
+                                VirtualKeyCode::Key6 => julia_state.set_active_midpt(2).unwrap(),
+
                                 VirtualKeyCode::R => julia_state.adjust_hue(5.0),
                                 VirtualKeyCode::F => julia_state.adjust_hue(-5.0),
                                 VirtualKeyCode::T => julia_state.adjust_saturation(5.0),
                                 VirtualKeyCode::G => julia_state.adjust_saturation(-5.0),
                                 VirtualKeyCode::Y => julia_state.adjust_value(5.0),
                                 VirtualKeyCode::H => julia_state.adjust_value(-5.0),
-                                VirtualKeyCode::U => julia_state.data.color_midpoint += 0.05,
-                                VirtualKeyCode::J => julia_state.data.color_midpoint -= 0.05,
+                                VirtualKeyCode::U => julia_state.adjust_active_midpt(0.05),
+                                VirtualKeyCode::J => julia_state.adjust_active_midpt(-0.05),
                                 VirtualKeyCode::I => julia_state.export_dimensions.width += 40,
                                 VirtualKeyCode::K => {
                                     if julia_state.export_dimensions.width > 40 {
@@ -416,13 +453,20 @@ fn print_state<W: Write>(state: &JuliaState, writer: &mut W) -> io::Result<()> {
         wrap_active(&format!("#{}", to_hex(c)), active, i)
     }
 
-    fn fmt_gradient(colors: &[Vec4; 3], active: usize, midpt: f32) -> String {
+    fn fmt_gradient(
+        colors: &[Vec4; 3],
+        midpts: &[f32; 3],
+        active_color: usize,
+        active_midpt: usize,
+    ) -> String {
         format!(
-            "{}, {}, {} ({})",
-            fmt_color(colors[0], active, 0),
-            fmt_color(colors[1], active, 1),
-            fmt_color(colors[2], active, 2),
-            midpt
+            "{}, {}, {} ({}, {}, {})",
+            fmt_color(colors[0], active_color, 0),
+            fmt_color(colors[1], active_color, 1),
+            fmt_color(colors[2], active_color, 2),
+            wrap_active(&format!("{}", midpts[0]), active_midpt, 0),
+            wrap_active(&format!("{}", midpts[1]), active_midpt, 1),
+            wrap_active(&format!("{}", midpts[2]), active_midpt, 2),
         )
     }
 
@@ -470,8 +514,9 @@ Export dimensions: {}x{}"#,
         fmt_complex(range2),
         fmt_gradient(
             &state.data.color,
+            &state.data.color_midpoint,
             state.active_color_idx(),
-            state.data.color_midpoint
+            state.active_midpt_idx(),
         ),
         fmt_hsv(&state.hsv_colors, state.active_color_idx()),
         state.export_dimensions.width,
@@ -581,6 +626,7 @@ impl JuliaInterface {
                     dragging: false,
                 },
                 active_color: 0,
+                active_midpt: 1,
                 hsv_colors,
                 close_requested: false,
                 export_dimensions,
@@ -681,6 +727,7 @@ impl JuliaInterface {
             if presented_time.elapsed().as_secs_f64() > 0.25
                 && (self.state.data != presented_state.data
                     || self.state.active_color != presented_state.active_color
+                    || self.state.active_midpt != presented_state.active_midpt
                     || self.state.hsv_colors != presented_state.hsv_colors
                     || self.state.export_dimensions != presented_state.export_dimensions)
             {

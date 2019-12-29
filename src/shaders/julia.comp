@@ -5,7 +5,7 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 layout(set = 0, binding = 0, rgba8) uniform image2D img;
 layout(set = 0, binding = 1) uniform Data {
   vec4 color[3];
-  float midpt;
+  vec3 midpt;
 
   uint n;
   vec2 c;
@@ -42,16 +42,20 @@ vec2 julia_iteration(vec2 z) {
 }
 
 vec4 interpolate_color(float interpolant) {
-  if (interpolant < data.midpt) {
-    interpolant = interpolant / data.midpt;
+  if (interpolant < data.midpt[0]) {
+    return data.color[0];
+  } else if (interpolant < data.midpt[1]) {
+    interpolant = (interpolant - data.midpt[0]) / (data.midpt[1] - data.midpt[0]);
     vec4 c = mix(data.color[0], data.color[1], interpolant);
 
     return c;
-  } else {
-    interpolant = (interpolant - data.midpt) / (1.0 - data.midpt);
+  } else if (interpolant < data.midpt[2]) {
+    interpolant = (interpolant - data.midpt[1]) / (data.midpt[2] - data.midpt[1]);
     vec4 c = mix(data.color[1], data.color[2], interpolant);
 
     return c;
+  } else {
+    return data.color[2];
   }
 }
 

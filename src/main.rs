@@ -1,5 +1,5 @@
 use julia::interface::JuliaInterface;
-use julia::{JuliaContext, JuliaData, ImgDimensions};
+use julia::{ImgDimensions, JuliaContext, JuliaData};
 
 #[macro_use]
 extern crate gramit;
@@ -54,7 +54,11 @@ struct JuliaArgs {
     /// CSS3 specification.
     #[structopt(short, long, parse(try_from_str = parse_gradient),
         default_value = "black,white")]
-    colors: ([Vec4; 3], f32),
+    colors: [Vec4; 3],
+
+    #[structopt(short = "g", long, parse(try_from_str = parse_midpts),
+        default_value = "0.5")]
+    midpts: [f32; 3],
 
     /// The complex number at the center of the image, given as two comma-separated decimal values.
     #[structopt(short = "O", long, parse(try_from_str = parse_vec2),
@@ -81,6 +85,12 @@ impl Display for ParseGradientError {
 
 impl Error for ParseGradientError {}
 
+impl From<std::num::ParseFloatError> for ParseGradientError {
+    fn from(_: std::num::ParseFloatError) -> ParseGradientError {
+        ParseGradientError
+    }
+}
+
 impl JuliaArgs {
     fn filename(&self) -> PathBuf {
         match &self.file {
@@ -93,7 +103,7 @@ impl JuliaArgs {
                 }
 
                 PathBuf::from(format!(
-                    "x{}_{}_{}i_m{}_c{}-{}_e{}_c{}-{}-{}-{}_{}x{}.png",
+                    "x{}_{}_{}i_m{}_c{}-{}_e{}_c{}-{}-{}-{}-{}-{}_{}x{}.png",
                     self.n,
                     self.cr,
                     self.ci,
@@ -101,10 +111,12 @@ impl JuliaArgs {
                     self.center[0],
                     self.center[1],
                     self.extent,
-                    to_hex(self.colors.0[0]),
-                    to_hex(self.colors.0[1]),
-                    to_hex(self.colors.0[2]),
-                    self.colors.1,
+                    to_hex(self.colors[0]),
+                    to_hex(self.colors[1]),
+                    to_hex(self.colors[2]),
+                    self.midpts[0],
+                    self.midpts[1],
+                    self.midpts[2],
                     self.width,
                     self.height,
                 ))
@@ -140,7 +152,7 @@ fn parse_hexcode(s: &str) -> Option<Srgb<u8>> {
     }
 }
 
-fn parse_gradient(s: &str) -> Result<([Vec4; 3], f32), ParseGradientError> {
+fn parse_gradient(s: &str) -> Result<[Vec4; 3], ParseGradientError> {
     let mut components = s.split(',').map(str::trim);
 
     fn must_be_color(s: Option<&str>) -> Result<Srgb<f32>, ParseGradientError> {
@@ -158,7 +170,13 @@ fn parse_gradient(s: &str) -> Result<([Vec4; 3], f32), ParseGradientError> {
 
     let c1 = must_be_color(components.next())?;
     let c2 = must_be_color(components.next())?;
+    let c3 = match components.next() {
+        None => None,
+        Some(s) => Some(must_be_color(Some(s))?),
+    }
+    .unwrap_or(Srgb::new(1.0, 1.0, 1.0));
 
+    /*
     let (c3, midpt) = match components.next() {
         // No third component, flat gradient between two colors
         None => (Srgb::<f32>::new(1.0, 1.0, 1.0), 0.9999999),
@@ -177,11 +195,31 @@ fn parse_gradient(s: &str) -> Result<([Vec4; 3], f32), ParseGradientError> {
             }
         },
     };
+    */
 
     if components.next().is_some() {
         Err(ParseGradientError)
     } else {
-        Ok(([to_vec4(c1), to_vec4(c2), to_vec4(c3)], midpt))
+        Ok([to_vec4(c1), to_vec4(c2), to_vec4(c3)])
+    }
+}
+
+fn parse_midpts(s: &str) -> Result<[f32; 3], ParseGradientError> {
+    let components: Vec<_> = s.split(',').map(str::trim).collect();
+
+    match components.len() {
+        1 => Ok([0.0, f32::from_str(components[0])?, 1.0]),
+        2 => Ok([
+            f32::from_str(components[0])?,
+            f32::from_str(components[1])?,
+            1.0,
+        ]),
+        3 => Ok([
+            f32::from_str(components[0])?,
+            f32::from_str(components[1])?,
+            f32::from_str(components[2])?,
+        ]),
+        _ => Err(ParseGradientError),
     }
 }
 
@@ -225,8 +263,8 @@ fn main() {
     };
 
     let data = JuliaData {
-        color: args.colors.0,
-        color_midpoint: args.colors.1,
+        color: args.colors,
+        color_midpoint: args.midpts,
         n: args.n,
         c: vec2!(args.cr, args.ci),
 

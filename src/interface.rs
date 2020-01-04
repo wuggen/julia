@@ -358,10 +358,10 @@ fn event_callback<'ifc>(
                                 VirtualKeyCode::F => julia_state.adjust_hue(-5.0),
                                 VirtualKeyCode::T => julia_state.adjust_saturation(5.0),
                                 VirtualKeyCode::G => julia_state.adjust_saturation(-5.0),
-                                VirtualKeyCode::Y => julia_state.adjust_value(5.0),
-                                VirtualKeyCode::H => julia_state.adjust_value(-5.0),
-                                VirtualKeyCode::U => julia_state.adjust_active_midpt(0.05),
-                                VirtualKeyCode::J => julia_state.adjust_active_midpt(-0.05),
+                                VirtualKeyCode::Y => julia_state.adjust_value(2.5),
+                                VirtualKeyCode::H => julia_state.adjust_value(-2.5),
+                                VirtualKeyCode::U => julia_state.adjust_active_midpt(0.01),
+                                VirtualKeyCode::J => julia_state.adjust_active_midpt(-0.01),
                                 VirtualKeyCode::I => julia_state.export_dimensions.width += 40,
                                 VirtualKeyCode::K => {
                                     if julia_state.export_dimensions.width > 40 {
